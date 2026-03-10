@@ -445,50 +445,63 @@ LATEX_MAP = {
 }
 
 def limpiar_latex(texto):
-    """Convierte LaTeX crudo a texto legible para el chat y PDFs."""
+    """Convierte LaTeX crudo a texto legible — limpieza agresiva."""
     if not texto:
         return texto
 
-    # Letras griegas y símbolos
+    # Eliminar bloques de código LaTeX de documento completo
+    texto = re.sub(r'```(?:tex|latex).*?```', '', texto, flags=re.DOTALL)
+    texto = re.sub(r'\\documentclass.*?\\end\{document\}', '', texto, flags=re.DOTALL)
+    texto = re.sub(r'\\documentclass[^\n]*\n', '', texto)
+    texto = re.sub(r'\\usepackage[^\n]*\n', '', texto)
+    texto = re.sub(r'\\geometry[^\n]*\n', '', texto)
+    texto = re.sub(r'\\begin\{document\}[^\n]*\n?', '', texto)
+    texto = re.sub(r'\\end\{document\}[^\n]*\n?', '', texto)
+    texto = re.sub(r'\\maketitle[^\n]*\n?', '', texto)
+    texto = re.sub(r'\\author\{[^}]*\}', '', texto)
+    texto = re.sub(r'\\date\{[^}]*\}', '', texto)
+    texto = re.sub(r'\\title\{([^}]*)\}', r'\1', texto)
+    texto = re.sub(r'\\section\*?\{([^}]*)\}', r'\n### \1\n', texto)
+    texto = re.sub(r'\\subsection\*?\{([^}]*)\}', r'\n**\1**\n', texto)
+
+    # Letras griegas y símbolos (LATEX_MAP)
     for latex, unicode_char in LATEX_MAP.items():
         texto = texto.replace(latex, unicode_char)
 
-    # \frac{a}{b} → (a/b)
+    # Fórmulas: \frac{a}{b} → (a/b)
     texto = re.sub(r'\\frac\{([^}]+)\}\{([^}]+)\}', r'(\1/\2)', texto)
-
-    # \sqrt{x} → √(x)
     texto = re.sub(r'\\sqrt\{([^}]+)\}', r'√(\1)', texto)
+    texto = re.sub(r'\\sqrt\b', '√', texto)
 
-    # Superíndices: x^{2} → x² / x^2 → x²
+    # Superíndices
     sup_map = {'0':'⁰','1':'¹','2':'²','3':'³','4':'⁴','5':'⁵',
                '6':'⁶','7':'⁷','8':'⁸','9':'⁹','n':'ⁿ'}
     def repl_sup(m):
-        c = m.group(1)
-        return ''.join(sup_map.get(ch, ch) for ch in c)
+        return ''.join(sup_map.get(ch, ch) for ch in m.group(1))
     texto = re.sub(r'\^\{([^}]+)\}', repl_sup, texto)
     texto = re.sub(r'\^(\d)', lambda m: sup_map.get(m.group(1), m.group(1)), texto)
 
-    # Subíndices: x_{i} → x_i (simplificado)
+    # Subíndices
     texto = re.sub(r'_\{([^}]+)\}', r'_\1', texto)
 
-    # Eliminar delimitadores $...$ y $$...$$
+    # Delimitadores matemáticos
+    texto = re.sub(r'\\\[(.+?)\\\]', r'\1', texto, flags=re.DOTALL)
+    texto = re.sub(r'\\\((.+?)\\\)', r'\1', texto, flags=re.DOTALL)
     texto = re.sub(r'\$\$(.+?)\$\$', r'\1', texto, flags=re.DOTALL)
     texto = re.sub(r'\$(.+?)\$', r'\1', texto)
 
-    # Eliminar \text{...} → solo el contenido
+    # Comandos de formato
     texto = re.sub(r'\\text\{([^}]+)\}', r'\1', texto)
+    texto = re.sub(r'\\(bf|it|rm|mathbf|mathit|mathrm|mathbb|textbf|textit)\{([^}]+)\}', r'\2', texto)
+    texto = re.sub(r'\\(left|right|big|Big|bigg|Bigg)[()\[\]|{}]?', '', texto)
 
-    # Eliminar \left, \right, \big, etc.
-    texto = re.sub(r'\\(left|right|big|Big|bigg|Bigg)[(\[{|)\]}\|]?', '', texto)
+    # Eliminar comandos LaTeX sueltos restantes
+    texto = re.sub(r'\\[a-zA-Z]+\*?(?:\{[^}]*\})*', '', texto)
 
-    # Eliminar comandos de formato: \bf, \it, \rm, etc.
-    texto = re.sub(r'\\(bf|it|rm|mathbf|mathit|mathrm|mathbb)\{([^}]+)\}', r'\2', texto)
-
-    # Limpiar llaves sueltas
+    # Limpiar llaves y símbolos sobrantes
     texto = texto.replace('{', '').replace('}', '')
-
-    # Espacios múltiples
     texto = re.sub(r' {2,}', ' ', texto)
+    texto = re.sub(r'\n{3,}', '\n\n', texto)
 
     return texto.strip()
 
@@ -1312,12 +1325,14 @@ async def analizar_imagen_completo(image_bytes, caption, user_id, perfil):
                     "content": (
                         f"El alumno envió una imagen con el siguiente contenido:\n\n"
                         f"{contexto}{caption_extra}\n\n"
-                        f"Resuelve cada ejercicio paso a paso de forma completa y clara.\n"
-                        f"REGLAS OBLIGATORIAS:\n"
-                        f"- Usa texto legible para fórmulas, NUNCA LaTeX crudo\n"
-                        f"- NUNCA uses \\documentclass, \\begin{{document}}, \\usepackage\n"
-                        f"- El PDF se genera automáticamente. NO des instrucciones para crearlo\n"
-                        f"- Entrega solo la solución directamente"
+                        f"Resuelve TODOS y CADA UNO de los ejercicios de la imagen sin omitir ninguno.\n"
+                        f"Si ves ejercicios 17, 18 y 19 — resuelve los 3. Sin excepción.\n"
+                        f"Formato: número del ejercicio → procedimiento completo → respuesta final.\n"
+                        f"REGLAS:\n"
+                        f"- Fórmulas en texto legible: n=m/M, E=mc², no LaTeX crudo\n"
+                        f"- Sin \\documentclass ni código LaTeX de documento\n"
+                        f"- El PDF lo genera JARVIS automáticamente, no des instrucciones de cómo hacerlo\n"
+                        f"- Solo las soluciones, nada más"
                     )
                 }
             ],
@@ -1920,7 +1935,10 @@ async def manejar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tiene_pasos     = bool(re.search(r'paso\s+\d+|\d+[\.\)]\s', solucion, re.IGNORECASE))
 
         await safe_delete(msg_espera)
-        await update.message.reply_text(solucion_limpia[:8000])
+
+        # Si NO pide PDF explícitamente, mandar texto en chat
+        if not pide_pdf:
+            await update.message.reply_text(solucion_limpia[:8000])
 
         # PDF: automático si es largo/con pasos, O si el caption lo pidió explícitamente
         if pide_pdf or respuesta_larga or tiene_pasos:
