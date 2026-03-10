@@ -62,8 +62,8 @@ for d in [HISTORIAL_DIR, PERFILES_DIR, ARCHIVOS_DIR]:
 # MODELOS IA (optimizados por tarea)
 # ─────────────────────────────────────────────
 MODELO_CHAT              = "llama-3.3-70b-versatile"
-MODELO_EJERCICIOS        = "llama-3.3-70b-versatile"
-MODELO_EJERCICIOS_RAPIDO = "llama-3.3-70b-versatile"
+MODELO_EJERCICIOS        = "openai/gpt-oss-120b"
+MODELO_EJERCICIOS_RAPIDO = "openai/gpt-oss-120b"
 MODELO_VISION            = "meta-llama/llama-4-scout-17b-16e-instruct"
 MODELO_VOZ               = "whisper-large-v3-turbo"
 MODELO_RAPIDO            = "llama-3.1-8b-instant"
@@ -1253,16 +1253,15 @@ def extraer_titulo_recordatorio(texto):
 # ─────────────────────────────────────────────
 async def analizar_imagen_completo(image_bytes, caption, user_id, perfil):
     """
-    Pipeline de visión en 2 pasos:
-    1. llama-4-scout extrae contexto completo de la imagen
-    2. Modelo especializado resuelve/responde
+    Pipeline de 3 pasos:
+    1. llama-4-scout: lee la imagen y transcribe TODOS los ejercicios
+    2. gpt-oss-120b: resuelve TODOS los ejercicios uno por uno
+    3. llama-3.1-8b: convierte LaTeX a texto limpio
     """
     loop = asyncio.get_event_loop()
-
-    # Codificar imagen en base64
     img_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-    # ── PASO 1: Extracción de contexto ──
+    # ── PASO 1: Scout lee y transcribe todos los ejercicios ──
     def extraer_contexto():
         return client.chat.completions.create(
             model=MODELO_VISION,
@@ -1276,113 +1275,111 @@ async def analizar_imagen_completo(image_bytes, caption, user_id, perfil):
                     {
                         "type": "text",
                         "text": (
-                            "Analiza esta imagen con máximo detalle y reporta:\n"
-                            "1. TIPO: ¿Qué tipo de contenido es? (ejercicio matemático, física, química, "
-                            "diagrama, gráfica, tabla de datos, texto, otra cosa)\n"
-                            "2. MATERIA: ¿De qué materia es? (Cálculo, Física, etc.)\n"
-                            "3. ENUNCIADO: Transcribe EXACTAMENTE todo el texto visible\n"
-                            "4. DIFICULTAD: simple/media/avanzada\n"
-                            "5. DATOS EXTRA: Cualquier valor numérico, unidad, diagrama, tabla presente\n"
-                            "Sé exhaustivo. No omitas nada."
+                            "Transcribe EXACTAMENTE todo el contenido de esta imagen.\n"
+                            "Si hay ejercicios numerados, transcríbelos TODOS con su número.\n"
+                            "Incluye: enunciados, datos, fórmulas, opciones de respuesta, todo.\n"
+                            "No omitas ningún ejercicio. No resuelvas nada, solo transcribe."
                         )
                     }
                 ]
             }],
-            max_tokens=1000
+            max_tokens=2000
         )
 
     try:
         ctx_resp = await loop.run_in_executor(None, extraer_contexto)
         contexto = ctx_resp.choices[0].message.content
+        logger.info(f"Scout transcribió: {len(contexto)} chars")
     except Exception as e:
-        logger.error(f"Error en extracción de contexto visual: {e}")
+        logger.error(f"Error extracción visual: {e}")
         contexto = caption or "Imagen enviada por el alumno"
 
-    # ── PASO 2: Determinar modelo y resolver ──
-    ctx_lower = contexto.lower()
-    dificultad_avanzada = any(k in ctx_lower for k in [
-        "integral", "derivada", "diferencial", "fourier", "laplace",
-        "avanzada", "ingeniería", "termodinámica", "fluidos", "circuito"
-    ])
-    modelo_usado = MODELO_EJERCICIOS if dificultad_avanzada else MODELO_EJERCICIOS_RAPIDO
-
-    system = construir_system_prompt(perfil)
-
-    # Limpiar el caption de instrucciones de formato (JARVIS maneja eso automáticamente)
+    # ── PASO 2: 120b resuelve TODOS los ejercicios ──
     _cap = re.sub(
         r'\b(en\s+)?pdf\b|de\s+manera\s+profesional|formato\s+pdf|como\s+pdf|resuélvelo|resuelvelo',
         '', caption, flags=re.IGNORECASE
     ).strip(" ,.-")
-    caption_extra = f"\nContexto adicional: {_cap}" if _cap else ""
+    caption_extra = f"\nNota del alumno: {_cap}" if _cap else ""
 
     def resolver():
         return client.chat.completions.create(
-            model=modelo_usado,
+            model=MODELO_EJERCICIOS,  # gpt-oss-120b
             messages=[
-                {"role": "system", "content": system},
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres un tutor experto en ciencias e ingeniería. "
+                        "Resuelves ejercicios de forma completa, paso a paso, con todos los cálculos."
+                    )
+                },
                 {
                     "role": "user",
                     "content": (
-                        f"El alumno envió una imagen con el siguiente contenido:\n\n"
-                        f"{contexto}{caption_extra}\n\n"
-                        f"Resuelve TODOS y CADA UNO de los ejercicios de la imagen sin omitir ninguno.\n"
-                        f"Si ves ejercicios 17, 18 y 19 — resuelve los 3. Sin excepción.\n"
-                        f"Formato: número del ejercicio → procedimiento completo → respuesta final.\n"
-                        f"REGLAS:\n"
-                        f"- Fórmulas en texto legible: n=m/M, E=mc², no LaTeX crudo\n"
-                        f"- Sin \\documentclass ni código LaTeX de documento\n"
-                        f"- El PDF lo genera JARVIS automáticamente, no des instrucciones de cómo hacerlo\n"
-                        f"- Solo las soluciones, nada más"
+                        f"Aquí están los ejercicios transcritos de una imagen:{caption_extra}\n\n"
+                        f"{contexto}\n\n"
+                        f"TAREA: Resuelve CADA ejercicio que aparece arriba, uno por uno, en orden.\n"
+                        f"No omitas ninguno. Si aparecen 3 ejercicios, resuelve los 3.\n"
+                        f"Para cada ejercicio:\n"
+                        f"- Escribe el número del ejercicio\n"
+                        f"- Escribe los datos conocidos\n"
+                        f"- Muestra el procedimiento completo con todos los cálculos\n"
+                        f"- Escribe la respuesta final con unidades\n"
+                        f"Usa texto plano para las fórmulas, no LaTeX."
                     )
                 }
             ],
-            max_tokens=4000
+            max_tokens=5000
         )
 
     try:
         sol_resp = await loop.run_in_executor(None, resolver)
         solucion_raw = sol_resp.choices[0].message.content
-
-        # ── PASO 3: Limpieza y reformateo con modelo rápido ──
-        # Garantiza que NUNCA llegue LaTeX al usuario
-        def limpiar_con_ia():
-            return client.chat.completions.create(
-                model=MODELO_RAPIDO,  # llama-3.1-8b-instant — rápido y suficiente
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Eres un reformateador de soluciones matemáticas. "
-                            "Tu única tarea: tomar una solución y reescribirla en texto limpio y legible. "
-                            "REGLAS ABSOLUTAS:\n"
-                            "- Convierte TODO LaTeX a texto: \\frac{a}{b} → a/b, \\sqrt{x} → √x, "
-                            "\\alpha → α, \\cdot → ×, \\times → ×\n"
-                            "- Elimina: \\documentclass, \\begin{}, \\end{}, \\usepackage, \\section, "
-                            "\\maketitle, $$, $, \\[, \\]\n"
-                            "- Mantén los números, procedimientos y respuestas intactos\n"
-                            "- Formato: cada ejercicio separado con línea en blanco, numerado claramente\n"
-                            "- NO agregues texto extra, solo reformatea"
-                        )
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Reformatea esta solución:\n\n{solucion_raw}"
-                    }
-                ],
-                max_tokens=4000
-            )
-
-        try:
-            clean_resp = await loop.run_in_executor(None, limpiar_con_ia)
-            solucion = clean_resp.choices[0].message.content
-        except Exception:
-            # Si falla el paso 3, usar limpiar_latex normal
-            solucion = limpiar_latex(solucion_raw)
-
-        return contexto, solucion, modelo_usado
+        logger.info(f"120b resolvió: {len(solucion_raw)} chars")
     except Exception as e:
-        logger.error(f"Error resolviendo desde imagen: {e}")
-        return contexto, "No pude procesar este ejercicio. Intenta describírmelo en texto.", modelo_usado
+        logger.error(f"Error resolviendo con 120b: {e}")
+        return contexto, "No pude resolver los ejercicios. Intenta describírmelos en texto.", MODELO_EJERCICIOS
+
+    # ── PASO 3: llama-3.1-8b limpia todo el LaTeX restante ──
+    def limpiar_con_ia():
+        return client.chat.completions.create(
+            model=MODELO_RAPIDO,  # llama-3.1-8b-instant
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres un limpiador de texto matemático. Tu única tarea:\n"
+                        "Recibir una solución y reescribirla sin ningún LaTeX.\n"
+                        "Conversiones obligatorias:\n"
+                        "- \\frac{a}{b} → a/b\n"
+                        "- \\sqrt{x} → √x\n"
+                        "- x^{2} → x²\n"
+                        "- \\alpha → α, \\beta → β, \\Delta → Δ, \\mu → μ\n"
+                        "- \\times → ×, \\cdot → ·\n"
+                        "- $$...$$ y $...$ → solo el contenido sin signos $\n"
+                        "- \\[...\\] y \\(...\\) → solo el contenido\n"
+                        "- Eliminar: \\documentclass, \\begin{}, \\end{}, \\usepackage, \\section, \\maketitle\n"
+                        "Mantén todos los números, procedimientos y respuestas intactos.\n"
+                        "Formato final: cada ejercicio separado por línea en blanco, numerado.\n"
+                        "No añadas ni quites contenido matemático, solo limpia el formato."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"Limpia esta solución:\n\n{solucion_raw}"
+                }
+            ],
+            max_tokens=5000
+        )
+
+    try:
+        clean_resp = await loop.run_in_executor(None, limpiar_con_ia)
+        solucion = clean_resp.choices[0].message.content
+        logger.info(f"8b limpió: {len(solucion)} chars")
+    except Exception as e:
+        logger.error(f"Error limpiando con 8b: {e}")
+        solucion = limpiar_latex(solucion_raw)  # fallback
+
+    return contexto, solucion, MODELO_EJERCICIOS
 
 
 # ─────────────────────────────────────────────
