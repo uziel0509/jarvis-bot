@@ -130,9 +130,17 @@ REGLAS DE RESPUESTA OBLIGATORIAS:
 - En PDFs las fórmulas SÍ se renderizan visualmente
 - Responde siempre en español a menos que el alumno escriba en otro idioma
 - NO uses frases robóticas como "¡Por supuesto!", "¡Claro que sí!", "Como asistente de IA"
-- NO termines cada mensaje con "¿Hay algo más en lo que pueda ayudarte?"
+- NO termines cada mensaje con "¿Hay algo más en lo que pueda ayudarte?" ni "¿En qué puedo ayudarte?"
+- NO empieces saludos con preguntas genéricas de asistente
 - Máximo 1 emoji por mensaje, úsalos solo cuando aporten algo
-- Sé conciso: si la respuesta es corta, que sea corta. No rellenes."""
+- Sé conciso: si la respuesta es corta, que sea corta. No rellenes.
+
+EJEMPLOS DE CÓMO RESPONDER (sigue este estilo exacto):
+- Si alguien dice "hola" → responde: "Hola [nombre si lo sabes]. ¿Qué necesitas?"
+- Si alguien dice "gracias" → responde: "Para eso estoy."
+- Si alguien dice "bien" → responde algo breve y natural, no una pregunta genérica
+- Si alguien pide ayuda con un ejercicio → ve directo a resolverlo, sin introducción
+- NUNCA respondas "¿En qué puedo ayudarte hoy?" — eso es lo que hace un robot, no un compañero"""
 
 # ─────────────────────────────────────────────
 # BASE DE DATOS
@@ -1862,39 +1870,41 @@ async def manejar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         photo   = update.message.photo[-1]
-        caption = update.message.caption or ""
+        caption = (update.message.caption or "").strip()
         loop    = asyncio.get_event_loop()
+
+        # Detectar si el caption pide PDF explícitamente
+        pide_pdf = bool(re.search(r'\bpdf\b|en pdf|como pdf|formato pdf|en documento', caption, re.IGNORECASE))
 
         # Descargar imagen
         file_obj  = await context.bot.get_file(photo.file_id)
-        img_bytes = await loop.run_in_executor(None, lambda: __import__('requests').get(file_obj.file_path).content)
+        img_bytes = await loop.run_in_executor(
+            None, lambda: __import__('requests').get(file_obj.file_path).content
+        )
 
-        # Pipeline de 2 pasos
+        # Pipeline de 2 pasos — pasamos el caption como instrucción explícita
         contexto_visual, solucion, modelo_usado = await analizar_imagen_completo(
             img_bytes, caption, user_id, perfil
         )
 
         # Actualizar historial
         historial = cargar_historial(user_id)
-        historial.append({"role": "user", "content": f"[IMAGEN] {contexto_visual[:300]}"})
+        historial.append({"role": "user", "content": f"[IMAGEN con instrucción: '{caption}'] {contexto_visual[:300]}"})
         historial.append({"role": "assistant", "content": solucion})
         guardar_historial(user_id, historial)
         incrementar_uso(user_id)
 
         solucion_limpia = limpiar_latex(solucion)
-        respuesta_larga = len(solucion) > 800
-        tiene_pasos = bool(re.search(r'paso\s+\d+|\d+\)', solucion, re.IGNORECASE))
+        respuesta_larga = len(solucion) > 600
+        tiene_pasos     = bool(re.search(r'paso\s+\d+|\d+[\.\)]\s', solucion, re.IGNORECASE))
 
-        try:
-            await msg_espera.delete()
-        except Exception:
-            pass
+        await safe_delete(msg_espera)
         await update.message.reply_text(solucion_limpia[:4000])
 
-        # PDF automático si es ejercicio largo
-        if respuesta_larga or tiene_pasos:
+        # PDF: automático si es largo/con pasos, O si el caption lo pidió explícitamente
+        if pide_pdf or respuesta_larga or tiene_pasos:
             try:
-                titulo_pdf = f"Ejercicio (imagen) — {datetime.now().strftime('%d/%m/%Y')}"
+                titulo_pdf = f"Ejercicio — {datetime.now().strftime('%d/%m/%Y')}"
                 path_pdf = crear_pdf_solucion(solucion, user_id, titulo_pdf, perfil)
                 await update.message.reply_document(
                     document=open(path_pdf, "rb"),
