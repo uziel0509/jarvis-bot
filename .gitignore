@@ -1,0 +1,10 @@
+.env
+*.pyc
+__pycache__/
+historial/
+perfiles/
+archivos/
+*.db
+archive/
+*.log
+.DS_Store
