@@ -1321,7 +1321,7 @@ async def analizar_imagen_completo(image_bytes, caption, user_id, perfil):
                     )
                 }
             ],
-            max_tokens=2500
+            max_tokens=4000
         )
 
     try:
@@ -1824,7 +1824,7 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
             return client.chat.completions.create(
                 model=modelo,
                 messages=msgs,
-                max_tokens=3000
+                max_tokens=4000
             )
 
         resp = await loop.run_in_executor(None, llamar_ia)
@@ -1849,7 +1849,7 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
         if es_ejercicio and (respuesta_larga or tiene_pasos):
             await safe_delete(msg_espera)
             respuesta_chat = limpiar_latex(respuesta)
-            await update.message.reply_text(respuesta_chat[:4000])
+            await update.message.reply_text(respuesta_chat[:8000])
             try:
                 perfil_actual = cargar_perfil(user_id)
                 titulo_pdf = f"Ejercicio — {datetime.now().strftime('%d/%m/%Y')}"
@@ -1920,7 +1920,7 @@ async def manejar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tiene_pasos     = bool(re.search(r'paso\s+\d+|\d+[\.\)]\s', solucion, re.IGNORECASE))
 
         await safe_delete(msg_espera)
-        await update.message.reply_text(solucion_limpia[:4000])
+        await update.message.reply_text(solucion_limpia[:8000])
 
         # PDF: automático si es largo/con pasos, O si el caption lo pidió explícitamente
         if pide_pdf or respuesta_larga or tiene_pasos:
