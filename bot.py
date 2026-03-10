@@ -1702,13 +1702,19 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
         )
         estructura = await generar_estructura_archivo(intencion, texto, perfil)
         if not estructura:
-            await msg_espera.edit_text("No pude generar el archivo. Intenta describir mejor lo que necesitas.")
+            try:
+                await msg_espera.edit_text("No pude generar el archivo. Intenta describir mejor lo que necesitas.")
+            except Exception:
+                pass
             return
 
         try:
             if intencion == "excel":
                 path = crear_excel(estructura, user_id, estructura.get("titulo", "Datos"))
-                await msg_espera.delete()
+                try:
+                    await msg_espera.delete()
+                except Exception:
+                    pass
                 await update.message.reply_document(
                     document=open(path, "rb"),
                     filename=f"{estructura.get('titulo', 'datos')}.xlsx",
@@ -1721,7 +1727,10 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
                     user_id,
                     estructura.get("titulo", "Presentación")
                 )
-                await msg_espera.delete()
+                try:
+                    await msg_espera.delete()
+                except Exception:
+                    pass
                 await update.message.reply_document(
                     document=open(path, "rb"),
                     filename=f"{estructura.get('titulo', 'presentacion')}.pptx",
@@ -1734,7 +1743,10 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
                     user_id,
                     estructura.get("titulo", "Documento")
                 )
-                await msg_espera.delete()
+                try:
+                    await msg_espera.delete()
+                except Exception:
+                    pass
                 await update.message.reply_document(
                     document=open(path, "rb"),
                     filename=f"{estructura.get('titulo', 'documento')}.docx",
@@ -1743,14 +1755,37 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
                 )
         except Exception as e:
             logger.error(f"Error generando archivo {intencion}: {e}")
-            await msg_espera.edit_text(
-                "Hubo un error generando el archivo. Intenta con una descripción más específica."
-            )
+            try:
+                await msg_espera.edit_text(
+                    "Hubo un error generando el archivo. Intenta con una descripción más específica."
+                )
+            except Exception:
+                try:
+                    await update.message.reply_text("Tuve un problema, intenta de nuevo.")
+                except Exception:
+                    pass
         incrementar_uso(user_id)
         return
 
     # ── CHAT / EJERCICIO ──
     msg_espera = await update.message.reply_text("⏳")
+
+    async def safe_edit(msg, texto_nuevo):
+        """Edita un mensaje de forma segura — si falló, manda uno nuevo."""
+        try:
+            await msg.edit_text(texto_nuevo)
+        except Exception:
+            try:
+                await update.message.reply_text(texto_nuevo)
+            except Exception as e2:
+                logger.error(f"safe_edit falló también: {e2}")
+
+    async def safe_delete(msg):
+        """Elimina un mensaje de forma segura — ignora si ya no existe."""
+        try:
+            await msg.delete()
+        except Exception:
+            pass
 
     try:
         loop  = asyncio.get_event_loop()
@@ -1783,12 +1818,9 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
         tiene_pasos = bool(re.search(r'paso\s+\d+|step\s+\d+|\d+\)', respuesta, re.IGNORECASE))
 
         if es_ejercicio and (respuesta_larga or tiene_pasos):
-            await msg_espera.delete()
-            # Enviar respuesta en texto primero (limpia)
+            await safe_delete(msg_espera)
             respuesta_chat = limpiar_latex(respuesta)
             await update.message.reply_text(respuesta_chat[:4000])
-
-            # Generar y enviar PDF
             try:
                 perfil_actual = cargar_perfil(user_id)
                 titulo_pdf = f"Ejercicio — {datetime.now().strftime('%d/%m/%Y')}"
@@ -1801,11 +1833,11 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
             except Exception as e:
                 logger.error(f"Error generando PDF automático: {e}")
         else:
-            await msg_espera.edit_text(limpiar_latex(respuesta))
+            await safe_edit(msg_espera, limpiar_latex(respuesta))
 
     except Exception as e:
         logger.error(f"Error en procesar_texto: {e}")
-        await msg_espera.edit_text(
+        await safe_edit(msg_espera,
             "Tuve un problema procesando tu mensaje. Intenta de nuevo en un momento."
         )
 
@@ -1853,7 +1885,10 @@ async def manejar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         respuesta_larga = len(solucion) > 800
         tiene_pasos = bool(re.search(r'paso\s+\d+|\d+\)', solucion, re.IGNORECASE))
 
-        await msg_espera.delete()
+        try:
+            await msg_espera.delete()
+        except Exception:
+            pass
         await update.message.reply_text(solucion_limpia[:4000])
 
         # PDF automático si es ejercicio largo
@@ -1871,7 +1906,10 @@ async def manejar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Error manejar_imagen: {e}")
-        await msg_espera.edit_text("No pude procesar la imagen. Intenta de nuevo.")
+        try:
+            await msg_espera.edit_text("No pude procesar la imagen. Intenta de nuevo.")
+        except Exception:
+            pass
 
 async def manejar_voz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1895,15 +1933,24 @@ async def manejar_voz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         texto_transcrito = await transcribir_audio(audio_bytes, "ogg")
 
         if not texto_transcrito:
-            await msg_espera.edit_text("No pude entender el audio. Intenta hablar más claro.")
+            try:
+                await msg_espera.edit_text("No pude entender el audio. Intenta hablar más claro.")
+            except Exception:
+                pass
             return
 
-        await msg_espera.edit_text(f"🎤 _{texto_transcrito}_", parse_mode="Markdown")
+        try:
+            await msg_espera.edit_text(f"🎤 _{texto_transcrito}_", parse_mode="Markdown")
+        except Exception:
+            pass
         await procesar_texto(update, context, texto_transcrito)
 
     except Exception as e:
         logger.error(f"Error manejar_voz: {e}")
-        await msg_espera.edit_text("Error procesando el audio.")
+        try:
+            await msg_espera.edit_text("Error procesando el audio.")
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────
