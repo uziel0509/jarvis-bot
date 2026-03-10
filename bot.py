@@ -62,8 +62,8 @@ for d in [HISTORIAL_DIR, PERFILES_DIR, ARCHIVOS_DIR]:
 # MODELOS IA (optimizados por tarea)
 # ─────────────────────────────────────────────
 MODELO_CHAT              = "llama-3.3-70b-versatile"
-MODELO_EJERCICIOS        = "openai/gpt-oss-120b"
-MODELO_EJERCICIOS_RAPIDO = "openai/gpt-oss-20b"
+MODELO_EJERCICIOS        = "llama-3.3-70b-versatile"
+MODELO_EJERCICIOS_RAPIDO = "llama-3.3-70b-versatile"
 MODELO_VISION            = "meta-llama/llama-4-scout-17b-16e-instruct"
 MODELO_VOZ               = "whisper-large-v3-turbo"
 MODELO_RAPIDO            = "llama-3.1-8b-instant"
@@ -1341,7 +1341,44 @@ async def analizar_imagen_completo(image_bytes, caption, user_id, perfil):
 
     try:
         sol_resp = await loop.run_in_executor(None, resolver)
-        solucion = sol_resp.choices[0].message.content
+        solucion_raw = sol_resp.choices[0].message.content
+
+        # ── PASO 3: Limpieza y reformateo con modelo rápido ──
+        # Garantiza que NUNCA llegue LaTeX al usuario
+        def limpiar_con_ia():
+            return client.chat.completions.create(
+                model=MODELO_RAPIDO,  # llama-3.1-8b-instant — rápido y suficiente
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Eres un reformateador de soluciones matemáticas. "
+                            "Tu única tarea: tomar una solución y reescribirla en texto limpio y legible. "
+                            "REGLAS ABSOLUTAS:\n"
+                            "- Convierte TODO LaTeX a texto: \\frac{a}{b} → a/b, \\sqrt{x} → √x, "
+                            "\\alpha → α, \\cdot → ×, \\times → ×\n"
+                            "- Elimina: \\documentclass, \\begin{}, \\end{}, \\usepackage, \\section, "
+                            "\\maketitle, $$, $, \\[, \\]\n"
+                            "- Mantén los números, procedimientos y respuestas intactos\n"
+                            "- Formato: cada ejercicio separado con línea en blanco, numerado claramente\n"
+                            "- NO agregues texto extra, solo reformatea"
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Reformatea esta solución:\n\n{solucion_raw}"
+                    }
+                ],
+                max_tokens=4000
+            )
+
+        try:
+            clean_resp = await loop.run_in_executor(None, limpiar_con_ia)
+            solucion = clean_resp.choices[0].message.content
+        except Exception:
+            # Si falla el paso 3, usar limpiar_latex normal
+            solucion = limpiar_latex(solucion_raw)
+
         return contexto, solucion, modelo_usado
     except Exception as e:
         logger.error(f"Error resolviendo desde imagen: {e}")
