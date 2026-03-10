@@ -1611,6 +1611,22 @@ async def enviar_recordatorio(app, user_id, rec_id, titulo, mensaje):
 
 
 # ─────────────────────────────────────────────
+# HELPERS DE MENSAJES (scope global)
+# ─────────────────────────────────────────────
+async def safe_edit(msg, texto_nuevo):
+    try:
+        await msg.edit_text(texto_nuevo)
+    except Exception:
+        pass
+
+async def safe_delete(msg):
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+
+# ─────────────────────────────────────────────
 # PROCESADOR CENTRAL DE TEXTO
 # ─────────────────────────────────────────────
 async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, texto: str):
@@ -1789,23 +1805,6 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
 
     # ── CHAT / EJERCICIO ──
     msg_espera = await update.message.reply_text("⏳")
-
-    async def safe_edit(msg, texto_nuevo):
-        """Edita un mensaje de forma segura — si falló, manda uno nuevo."""
-        try:
-            await msg.edit_text(texto_nuevo)
-        except Exception:
-            try:
-                await update.message.reply_text(texto_nuevo)
-            except Exception as e2:
-                logger.error(f"safe_edit falló también: {e2}")
-
-    async def safe_delete(msg):
-        """Elimina un mensaje de forma segura — ignora si ya no existe."""
-        try:
-            await msg.delete()
-        except Exception:
-            pass
 
     try:
         loop  = asyncio.get_event_loop()
