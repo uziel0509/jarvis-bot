@@ -1630,6 +1630,18 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
         return
 
     # Detectar intención
+
+    # ── SALUDO CORTO — respuesta directa sin modelo ──
+    _t = texto.lower().strip()
+    _saludos = {"hola","hello","hi","ola","buenas","hey","que tal","qué tal",
+                "buenas tardes","buenas noches","buenos dias","buenos días",
+                "buen dia","buen día"}
+    if _t in _saludos:
+        _nombre = perfil.get("nombre", "")
+        await update.message.reply_text(f"Hola{chr(32) + _nombre if _nombre else chr(46)} ¿Qué necesitas?")
+        incrementar_uso(user_id)
+        return
+
     intencion = detectar_intencion(texto)
     modelo    = elegir_modelo(intencion)
 
