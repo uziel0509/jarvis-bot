@@ -1294,7 +1294,13 @@ async def analizar_imagen_completo(image_bytes, caption, user_id, perfil):
     modelo_usado = MODELO_EJERCICIOS if dificultad_avanzada else MODELO_EJERCICIOS_RAPIDO
 
     system = construir_system_prompt(perfil)
-    caption_extra = f"\nNota adicional del alumno: {caption}" if caption else ""
+
+    # Limpiar el caption de instrucciones de formato (JARVIS maneja eso automáticamente)
+    _cap = re.sub(
+        r'\b(en\s+)?pdf\b|de\s+manera\s+profesional|formato\s+pdf|como\s+pdf|resuélvelo|resuelvelo',
+        '', caption, flags=re.IGNORECASE
+    ).strip(" ,.-")
+    caption_extra = f"\nContexto adicional: {_cap}" if _cap else ""
 
     def resolver():
         return client.chat.completions.create(
@@ -1306,8 +1312,12 @@ async def analizar_imagen_completo(image_bytes, caption, user_id, perfil):
                     "content": (
                         f"El alumno envió una imagen con el siguiente contenido:\n\n"
                         f"{contexto}{caption_extra}\n\n"
-                        f"Resuelve paso a paso de forma completa y clara. "
-                        f"Usa texto legible para las fórmulas (no LaTeX crudo)."
+                        f"Resuelve cada ejercicio paso a paso de forma completa y clara.\n"
+                        f"REGLAS OBLIGATORIAS:\n"
+                        f"- Usa texto legible para fórmulas, NUNCA LaTeX crudo\n"
+                        f"- NUNCA uses \\documentclass, \\begin{{document}}, \\usepackage\n"
+                        f"- El PDF se genera automáticamente. NO des instrucciones para crearlo\n"
+                        f"- Entrega solo la solución directamente"
                     )
                 }
             ],
