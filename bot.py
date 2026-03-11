@@ -44,6 +44,22 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY, TA_RIGHT
 from reportlab.pdfgen import canvas as rl_canvas
 
 # ─────────────────────────────────────────────
+# MÓDULOS JARVIS 3.1
+# ─────────────────────────────────────────────
+from modulos.finanzas import (
+    registrar_gasto, registrar_ingreso, resumen_mensual,
+    configurar_limite, agregar_pago_recurrente, check_pagos_hoy,
+    get_pagos_hoy, prompt_interpretar_finanzas
+)
+from modulos.horario import (
+    necesita_horario, mensaje_pedir_foto_horario, guardar_horario_extraido,
+    registrar_examen, registrar_entrega, resumen_hoy,
+    get_examenes_sin_analizar, mensaje_pedir_foto_examen,
+    guardar_resultado_examen, PROMPT_EXTRAER_HORARIO, PROMPT_ANALIZAR_EXAMEN
+)
+from modulos.pre_render import procesar_output, elementos_a_texto_plano
+
+# ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
 load_dotenv()
@@ -85,6 +101,14 @@ SUMMARY_EVERY = 20
 # ONBOARDING — estados de conversación
 # ─────────────────────────────────────────────
 OB_NOMBRE, OB_CARRERA, OB_CICLO, OB_UNIVERSIDAD = range(4)
+
+# ─────────────────────────────────────────────
+# ESTADO DE CONTEXTO DE FOTO — distingue tipo de imagen esperada
+# ─────────────────────────────────────────────
+# Se guarda en context.user_data["esperando_foto"]
+FOTO_HORARIO  = "horario"
+FOTO_EXAMEN   = "examen"
+FOTO_EJERCICIO = "ejercicio"
 
 # ─────────────────────────────────────────────
 # LOGGING
@@ -162,6 +186,17 @@ def init_db():
         user_id INTEGER, anio INTEGER, mes INTEGER,
         mensajes INTEGER DEFAULT 0, plan TEXT DEFAULT 'basico',
         PRIMARY KEY (user_id, anio, mes))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS horario_clases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, materia TEXT, dia TEXT,
+        hora_inicio TEXT, hora_fin TEXT, aula TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS examenes_pendientes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, materia TEXT, fecha TEXT,
+        hora TEXT, notificado INTEGER DEFAULT 0,
+        analizado INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
     conn.commit()
     conn.close()
 
@@ -385,12 +420,41 @@ KEYWORDS_CONTABILIDAD = [
     "cuanto llevo", "cuánto tengo"
 ]
 
+KEYWORDS_HORARIO = [
+    "mi horario", "ver horario", "clases hoy", "que tengo hoy",
+    "qué tengo hoy", "resumen del dia", "resumen del día",
+    "mis clases", "horario de hoy", "agenda de hoy",
+    "tengo clases", "a qué hora", "a que hora tengo"
+]
+
+KEYWORDS_EXAMEN = [
+    "tengo examen", "examen de", "registrar examen", "examen el",
+    "hay examen", "fecha de examen", "mi examen"
+]
+
+KEYWORDS_ENTREGA = [
+    "entrega de", "entregar", "presentar", "fecha de entrega",
+    "tengo que entregar", "plazo de"
+]
+
 def detectar_intencion(texto):
     t = texto.lower()
 
     # Recordatorio (prioridad alta — tiene palabras muy específicas)
     if any(k in t for k in KEYWORDS_RECORDATORIO):
         return "recordatorio"
+
+    # Horario / agenda académica
+    if any(k in t for k in KEYWORDS_HORARIO):
+        return "horario"
+
+    # Examen
+    if any(k in t for k in KEYWORDS_EXAMEN):
+        return "examen"
+
+    # Entrega
+    if any(k in t for k in KEYWORDS_ENTREGA):
+        return "entrega"
 
     # Contabilidad
     if any(k in t for k in KEYWORDS_CONTABILIDAD):
@@ -422,6 +486,9 @@ def elegir_modelo(intencion):
         "chat":               MODELO_CHAT,
         "recordatorio":       MODELO_RAPIDO,
         "contabilidad":       MODELO_RAPIDO,
+        "horario":            MODELO_RAPIDO,
+        "examen":             MODELO_RAPIDO,
+        "entrega":            MODELO_RAPIDO,
     }
     return mapa.get(intencion, MODELO_CHAT)
 
@@ -1613,42 +1680,28 @@ async def cmd_recordatorios(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(texto, parse_mode="Markdown")
 
 async def cmd_contabilidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra resumen financiero completo usando módulo finanzas.py"""
     user_id = update.effective_user.id
-    now     = datetime.now()
-    conn    = sqlite3.connect(DB_PATH)
-    c       = conn.cursor()
-    mes_str = f"{now.year}-{now.month:02d}"
-    c.execute(
-        "SELECT tipo, concepto, monto, fecha FROM contabilidad "
-        "WHERE user_id=? AND fecha LIKE ? ORDER BY fecha DESC LIMIT 20",
-        (user_id, f"{mes_str}%")
-    )
-    rows = c.fetchall()
-
-    c.execute("SELECT SUM(monto) FROM contabilidad WHERE user_id=? AND tipo='ingreso' AND fecha LIKE ?",
-              (user_id, f"{mes_str}%"))
-    total_ing = c.fetchone()[0] or 0.0
-
-    c.execute("SELECT SUM(monto) FROM contabilidad WHERE user_id=? AND tipo='gasto' AND fecha LIKE ?",
-              (user_id, f"{mes_str}%"))
-    total_gas = c.fetchone()[0] or 0.0
-    conn.close()
-
-    balance = total_ing - total_gas
-    emoji_balance = "✅" if balance >= 0 else "⚠️"
-
-    texto = f"*Contabilidad — {now.strftime('%B %Y').capitalize()}*\n\n"
-    texto += f"💚 Ingresos: S/ {total_ing:.2f}\n"
-    texto += f"🔴 Gastos:   S/ {total_gas:.2f}\n"
-    texto += f"{emoji_balance} Balance:  S/ {balance:.2f}\n\n"
-
-    if rows:
-        texto += "*Últimos movimientos:*\n"
-        for tipo, concepto, monto, fecha in rows[:8]:
-            icono = "💚" if tipo == "ingreso" else "🔴"
-            texto += f"{icono} {concepto}: S/ {monto:.2f}\n"
-
+    texto = resumen_mensual(user_id)
     await update.message.reply_text(texto, parse_mode="Markdown")
+
+
+async def cmd_horario(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra resumen del día académico."""
+    user_id = update.effective_user.id
+
+    if necesita_horario(user_id):
+        context.user_data["esperando_foto"] = FOTO_HORARIO
+        await update.message.reply_text(mensaje_pedir_foto_horario())
+        return
+
+    resumen = resumen_hoy(user_id)
+    await update.message.reply_text(resumen, parse_mode="Markdown")
+
+
+async def cmd_finanzas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Alias de /contabilidad más amigable."""
+    await cmd_contabilidad(update, context)
 
 
 # ─────────────────────────────────────────────
@@ -1758,29 +1811,119 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
         incrementar_uso(user_id)
         return
 
+    # ── HORARIO / AGENDA ──
+    if intencion == "horario":
+        if necesita_horario(user_id):
+            context.user_data["esperando_foto"] = FOTO_HORARIO
+            await update.message.reply_text(mensaje_pedir_foto_horario())
+        else:
+            await update.message.reply_text(resumen_hoy(user_id), parse_mode="Markdown")
+        incrementar_uso(user_id)
+        return
+
+    # ── REGISTRAR EXAMEN ──
+    if intencion == "examen":
+        dt = parsear_fecha_natural(texto)
+        t_lower = texto.lower()
+        materia = "Materia"
+        for kw in ["examen de ", "examen del ", "parcial de ", "final de "]:
+            if kw in t_lower:
+                resto  = t_lower.split(kw, 1)[1]
+                materia = resto.split(" el ")[0].split(" mañana")[0].strip().capitalize()
+                break
+        if dt:
+            registrar_examen(user_id, materia, dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M"))
+            dt_aviso = dt - timedelta(days=1)
+            if dt_aviso > datetime.now():
+                context.application.job_queue.run_once(
+                    lambda ctx, uid=user_id, m=materia, d=dt: asyncio.create_task(
+                        context.application.bot.send_message(
+                            chat_id=uid,
+                            text=f"📚 *Recordatorio*: Mañana tienes examen de *{m}* a las {d.strftime('%H:%M')}. ¡Repasa esta noche!",
+                            parse_mode="Markdown"
+                        )
+                    ),
+                    when=dt_aviso,
+                    name=f"exam_aviso_{user_id}_{materia}"
+                )
+            await update.message.reply_text(
+                f"📝 *Examen registrado*\n\n"
+                f"📖 Materia: {materia}\n"
+                f"📅 Fecha: {dt.strftime('%A %d/%m/%Y a las %H:%M')}\n\n"
+                f"Te avisaré un día antes. 💪",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                "No entendí la fecha. Dime algo como:\n"
+                "\"Tengo examen de Física el viernes a las 10am\""
+            )
+        incrementar_uso(user_id)
+        return
+
+    # ── REGISTRAR ENTREGA ──
+    if intencion == "entrega":
+        dt = parsear_fecha_natural(texto)
+        t_lower  = texto.lower()
+        concepto = "Entrega"
+        for kw in ["entrega de ", "entregar ", "presentar "]:
+            if kw in t_lower:
+                resto    = t_lower.split(kw, 1)[1]
+                concepto = resto.split(" el ")[0].split(" mañana")[0].strip().capitalize()
+                break
+        if dt:
+            registrar_entrega(user_id, concepto, dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M"))
+            await update.message.reply_text(
+                f"✅ *Entrega registrada*\n\n"
+                f"📋 {concepto}\n"
+                f"📅 {dt.strftime('%A %d/%m/%Y a las %H:%M')}",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                "No entendí la fecha. Dime algo como:\n"
+                "\"Tengo que entregar el informe el jueves a las 8am\""
+            )
+        incrementar_uso(user_id)
+        return
+
     # ── CONTABILIDAD ──
     if intencion == "contabilidad":
-        # Si es consulta de balance
-        if any(k in texto.lower() for k in ["mi balance", "mis gastos", "cuánto llevo", "cuanto llevo",
-                                              "mi saldo", "mis ingresos"]):
-            await cmd_contabilidad(update, context)
-        else:
-            tipo, monto, concepto = parsear_movimiento(texto)
-            if monto > 0:
-                conn = sqlite3.connect(DB_PATH)
-                conn.execute(
-                    "INSERT INTO contabilidad (user_id, tipo, concepto, monto, fecha) VALUES (?,?,?,?,?)",
-                    (user_id, tipo, concepto, monto, datetime.now().strftime("%Y-%m-%d"))
-                )
-                conn.commit()
-                conn.close()
-                icono = "💚" if tipo == "ingreso" else "🔴"
+        t_lower = texto.lower()
+        # Ver balance / resumen
+        if any(k in t_lower for k in ["mi balance", "mis gastos", "cuánto llevo", "cuanto llevo",
+                                        "mi saldo", "mis ingresos", "ver gastos", "resumen"]):
+            await update.message.reply_text(resumen_mensual(user_id), parse_mode="Markdown")
+        # Configurar límite mensual
+        elif any(k in t_lower for k in ["limite", "límite", "presupuesto"]):
+            m = re.search(r'(\d+(?:\.\d{1,2})?)', texto)
+            if m:
+                monto_limite = float(m.group(1))
+                configurar_limite(user_id, monto_limite)
                 await update.message.reply_text(
-                    f"{icono} Registrado: *{concepto}*\n"
-                    f"Monto: S/ {monto:.2f} ({tipo})\n\n"
-                    f"Usa /contabilidad para ver tu balance.",
+                    f"✅ Límite mensual configurado en *S/ {monto_limite:.2f}*\n"
+                    f"Te avisaré cuando llegues al 80% y al 100%.",
                     parse_mode="Markdown"
                 )
+            else:
+                await update.message.reply_text("¿Cuánto quieres de límite mensual? Ej: \"Límite 800 soles\"")
+        else:
+            # Registrar movimiento usando módulo finanzas.py
+            tipo, monto, concepto = parsear_movimiento(texto)
+            if monto > 0:
+                if tipo == "gasto":
+                    alerta = registrar_gasto(user_id, monto, concepto)
+                else:
+                    alerta = registrar_ingreso(user_id, monto, concepto)
+                icono = "💚" if tipo == "ingreso" else "🔴"
+                respuesta = (
+                    f"{icono} Registrado: *{concepto}*\n"
+                    f"Monto: S/ {monto:.2f} ({tipo})\n\n"
+                    f"Usa /finanzas para ver tu balance."
+                )
+                if alerta:
+                    respuesta += f"\n\n{alerta}"
+                await update.message.reply_text(respuesta, parse_mode="Markdown")
             else:
                 await update.message.reply_text(
                     "No detecté el monto. Dime algo como:\n"
@@ -1891,18 +2034,19 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
         incrementar_uso(user_id)
 
         # Decidir si generar PDF automático
-        es_ejercicio = intencion in ("ejercicio_dificil", "ejercicio_simple")
+        es_ejercicio    = intencion in ("ejercicio_dificil", "ejercicio_simple")
         respuesta_larga = len(respuesta) > 800
-        tiene_pasos = bool(re.search(r'paso\s+\d+|step\s+\d+|\d+\)', respuesta, re.IGNORECASE))
+        tiene_pasos     = bool(re.search(r'paso\s+\d+|step\s+\d+|\d+\)', respuesta, re.IGNORECASE))
 
         if es_ejercicio and (respuesta_larga or tiene_pasos):
             await safe_delete(msg_espera)
-            respuesta_chat = limpiar_latex(respuesta)
+            # Pre-render: limpiar LaTeX y código antes de enviar al chat
+            elementos     = procesar_output(respuesta)
+            respuesta_chat = elementos_a_texto_plano(elementos)
             await update.message.reply_text(respuesta_chat[:8000])
             try:
-                perfil_actual = cargar_perfil(user_id)
                 titulo_pdf = f"Ejercicio — {datetime.now().strftime('%d/%m/%Y')}"
-                path_pdf = crear_pdf_solucion(respuesta, user_id, titulo_pdf, perfil_actual)
+                path_pdf   = crear_pdf_solucion(respuesta, user_id, titulo_pdf, perfil)
                 await update.message.reply_document(
                     document=open(path_pdf, "rb"),
                     filename="solucion_jarvis.pdf",
@@ -1936,45 +2080,141 @@ async def manejar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Límite mensual alcanzado. Actualiza tu plan para continuar.")
         return
 
-    msg_espera = await update.message.reply_text("🔍 Analizando imagen...")
+    # ── Detectar tipo de foto esperada por contexto ──
+    tipo_foto = context.user_data.pop("esperando_foto", FOTO_EJERCICIO)
+
+    msg_espera = await update.message.reply_text(
+        "📅 Procesando tu horario..." if tipo_foto == FOTO_HORARIO else
+        "📝 Analizando tu examen..." if tipo_foto == FOTO_EXAMEN else
+        "🔍 Analizando imagen..."
+    )
 
     try:
         photo   = update.message.photo[-1]
         caption = (update.message.caption or "").strip()
         loop    = asyncio.get_event_loop()
 
-        # Detectar si el caption pide PDF explícitamente
-        pide_pdf = bool(re.search(r'\bpdf\b|en pdf|como pdf|formato pdf|en documento', caption, re.IGNORECASE))
-
         # Descargar imagen
         file_obj  = await context.bot.get_file(photo.file_id)
         img_bytes = await loop.run_in_executor(
             None, lambda: __import__('requests').get(file_obj.file_path).content
         )
+        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
 
-        # Pipeline de 2 pasos — pasamos el caption como instrucción explícita
+        # ── FOTO HORARIO ──
+        if tipo_foto == FOTO_HORARIO:
+            def extraer_horario():
+                return client.chat.completions.create(
+                    model=MODELO_VISION,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                            {"type": "text", "text": PROMPT_EXTRAER_HORARIO}
+                        ]
+                    }],
+                    max_tokens=2000
+                )
+            resp_vision = await loop.run_in_executor(None, extraer_horario)
+            raw = resp_vision.choices[0].message.content
+            try:
+                import re as _re
+                json_match = _re.search(r'\[[\s\S]*\]|\{[\s\S]*\}', raw)
+                if json_match:
+                    parsed = json.loads(json_match.group())
+                    # Normalizar: puede venir como lista de clases o como dict con key "clases"
+                    if isinstance(parsed, dict):
+                        clases = parsed.get("clases", [])
+                    else:
+                        clases = parsed
+                else:
+                    clases = []
+
+                if clases:
+                    guardar_horario_extraido(user_id, clases)
+                    await safe_delete(msg_espera)
+                    await update.message.reply_text(
+                        f"✅ *Horario cargado exitosamente*\n\n"
+                        f"📚 {len(clases)} clases detectadas\n\n"
+                        f"Usa /horario para ver tu agenda del día.",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await safe_delete(msg_espera)
+                    await update.message.reply_text(
+                        "No pude leer el horario claramente. Intenta con una foto más nítida."
+                    )
+            except Exception as e:
+                logger.error(f"Error parsing horario: {e}")
+                await safe_delete(msg_espera)
+                await update.message.reply_text("Error procesando el horario. Intenta de nuevo.")
+            incrementar_uso(user_id)
+            return
+
+        # ── FOTO EXAMEN (post-examen para análisis de errores) ──
+        if tipo_foto == FOTO_EXAMEN:
+            materia = context.user_data.pop("examen_materia", "la materia")
+            examen_id = context.user_data.pop("examen_id", None)
+
+            def analizar_examen():
+                return client.chat.completions.create(
+                    model=MODELO_EJERCICIOS,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                            {"type": "text", "text": PROMPT_ANALIZAR_EXAMEN.format(materia=materia)}
+                        ]
+                    }],
+                    max_tokens=3000
+                )
+            resp_analisis = await loop.run_in_executor(None, analizar_examen)
+            analisis = resp_analisis.choices[0].message.content
+
+            if examen_id:
+                guardar_resultado_examen(user_id, examen_id, materia, analisis)
+
+            await safe_delete(msg_espera)
+            await update.message.reply_text(limpiar_latex(analisis)[:4000])
+
+            # Generar PDF de retroalimentación
+            try:
+                titulo_pdf = f"Análisis Examen {materia} — {datetime.now().strftime('%d/%m/%Y')}"
+                path_pdf = crear_pdf_solucion(analisis, user_id, titulo_pdf, perfil)
+                await update.message.reply_document(
+                    document=open(path_pdf, "rb"),
+                    filename=f"analisis_{materia.lower().replace(' ','_')}.pdf",
+                    caption=f"📊 Retroalimentación completa de tu examen de {materia}"
+                )
+            except Exception as e:
+                logger.error(f"Error PDF análisis examen: {e}")
+            incrementar_uso(user_id)
+            return
+
+        # ── FOTO EJERCICIO (flujo original) ──
+        pide_pdf = bool(re.search(r'\bpdf\b|en pdf|como pdf|formato pdf|en documento', caption, re.IGNORECASE))
+
         contexto_visual, solucion, modelo_usado = await analizar_imagen_completo(
             img_bytes, caption, user_id, perfil
         )
 
-        # Actualizar historial
         historial = cargar_historial(user_id)
-        historial.append({"role": "user", "content": f"[IMAGEN con instrucción: '{caption}'] {contexto_visual[:300]}"})
+        historial.append({"role": "user",      "content": f"[IMAGEN con instrucción: '{caption}'] {contexto_visual[:300]}"})
         historial.append({"role": "assistant", "content": solucion})
         guardar_historial(user_id, historial)
         incrementar_uso(user_id)
 
-        solucion_limpia = limpiar_latex(solucion)
+        # Usar pre_render para limpiar la respuesta
+        elementos     = procesar_output(solucion)
+        solucion_chat = elementos_a_texto_plano(elementos)
         respuesta_larga = len(solucion) > 600
         tiene_pasos     = bool(re.search(r'paso\s+\d+|\d+[\.\)]\s', solucion, re.IGNORECASE))
 
         await safe_delete(msg_espera)
 
-        # Si NO pide PDF explícitamente, mandar texto en chat
         if not pide_pdf:
-            await update.message.reply_text(solucion_limpia[:8000])
+            await update.message.reply_text(solucion_chat[:8000])
 
-        # PDF: automático si es largo/con pasos, O si el caption lo pidió explícitamente
         if pide_pdf or respuesta_larga or tiene_pasos:
             try:
                 titulo_pdf = f"Ejercicio — {datetime.now().strftime('%d/%m/%Y')}"
@@ -1988,11 +2228,15 @@ async def manejar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Error PDF imagen: {e}")
 
     except Exception as e:
-        logger.error(f"Error manejar_imagen: {e}")
+        logger.error(f"Error manejar_imagen ({tipo_foto}): {e}")
         try:
             await msg_espera.edit_text("No pude procesar la imagen. Intenta de nuevo.")
         except Exception:
             pass
+
+    # ── BLOQUE VACÍO — mantener compatibilidad con código previo ──
+    # (el resto del handler original está integrado arriba)
+    return  # evita caer en código legacy
 
 async def manejar_voz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2066,6 +2310,89 @@ async def recargar_recordatorios_pendientes(app):
 # ─────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────
+async def cron_pagos_recurrentes(context):
+    """Cron diario: revisa y notifica pagos recurrentes del día."""
+    from modulos.finanzas import get_pagos_hoy
+    import sqlite3 as _sql
+    conn = _sql.connect(DB_PATH)
+    c    = conn.cursor()
+    c.execute("SELECT DISTINCT user_id FROM uso_mensual")
+    usuarios = [r[0] for r in c.fetchall()]
+    conn.close()
+    for uid in usuarios:
+        pagos = get_pagos_hoy(uid)
+        if pagos:
+            lineas = "\n".join(f"• {p['concepto']}: S/ {p['monto']:.2f}" for p in pagos)
+            try:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text=f"💳 *Pagos recurrentes de hoy*\n\n{lineas}\n\n"
+                         f"Recuerda registrarlos con /finanzas",
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.warning(f"No se pudo notificar pagos a {uid}: {e}")
+
+
+async def cron_resumen_diario(context):
+    """Cron cada mañana: envía resumen del día académico."""
+    import sqlite3 as _sql
+    conn = _sql.connect(DB_PATH)
+    c    = conn.cursor()
+    c.execute("SELECT DISTINCT user_id FROM uso_mensual")
+    usuarios = [r[0] for r in c.fetchall()]
+    conn.close()
+    for uid in usuarios:
+        try:
+            from modulos.horario import necesita_horario, resumen_hoy
+            if not necesita_horario(uid):
+                resumen = resumen_hoy(uid)
+                if "📚" in resumen or "📝" in resumen:  # Solo si hay algo que reportar
+                    await context.bot.send_message(
+                        chat_id=uid,
+                        text=f"🌅 *Buenos días* — Aquí tu agenda de hoy:\n\n{resumen}",
+                        parse_mode="Markdown"
+                    )
+        except Exception as e:
+            logger.warning(f"No se pudo enviar resumen diario a {uid}: {e}")
+
+
+async def cron_detectar_examenes_pasados(context):
+    """Cron post-examen: detecta exámenes que ya pasaron y pide foto al alumno."""
+    import sqlite3 as _sql
+    ahora = datetime.now()
+    conn = _sql.connect(DB_PATH)
+    c    = conn.cursor()
+    # Buscar exámenes de las últimas 6h que no han sido analizados
+    c.execute("""
+        SELECT id, user_id, materia, fecha, hora
+        FROM examenes_pendientes
+        WHERE analizado=0 AND notificado=0
+        AND datetime(fecha || ' ' || hora) < datetime('now', 'localtime')
+        AND datetime(fecha || ' ' || hora) > datetime('now', '-6 hours', 'localtime')
+    """)
+    rows = c.fetchall()
+    for exam_id, uid, materia, fecha, hora in rows:
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=f"📋 *¿Cómo te fue en el examen de {materia}?*\n\n"
+                     f"Mándame una foto de tu examen y te doy retroalimentación detallada:\n"
+                     f"• Errores conceptuales vs de cálculo\n"
+                     f"• Qué reforzar antes del siguiente\n"
+                     f"• PDF con análisis completo",
+                parse_mode="Markdown"
+            )
+            # Marcar como notificado — cuando mande la foto se procesa
+            c.execute("UPDATE examenes_pendientes SET notificado=1 WHERE id=?", (exam_id,))
+            conn.commit()
+            # Guardar en contexto del bot para que manejar_imagen sepa qué esperar
+            # Se hace cuando llegue la foto, via context.user_data
+        except Exception as e:
+            logger.warning(f"No se pudo notificar examen pasado a {uid}: {e}")
+    conn.close()
+
+
 def main():
     init_db()
 
@@ -2092,26 +2419,51 @@ def main():
     app.add_handler(CommandHandler("limpiar",       cmd_limpiar))
     app.add_handler(CommandHandler("recordatorios", cmd_recordatorios))
     app.add_handler(CommandHandler("contabilidad",  cmd_contabilidad))
+    app.add_handler(CommandHandler("finanzas",      cmd_finanzas))
+    app.add_handler(CommandHandler("horario",       cmd_horario))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manejar_mensaje))
     app.add_handler(MessageHandler(filters.PHOTO,                   manejar_imagen))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO,   manejar_voz))
 
-    # Comandos del menú
     async def post_init(application):
         await recargar_recordatorios_pendientes(application)
+
+        # ── CRON JOBS ──
+        # Resumen diario a las 7am hora Perú
+        application.job_queue.run_daily(
+            cron_resumen_diario,
+            time=__import__('datetime').time(7, 0, 0),
+            name="resumen_diario"
+        )
+        # Pagos recurrentes a las 8am
+        application.job_queue.run_daily(
+            cron_pagos_recurrentes,
+            time=__import__('datetime').time(8, 0, 0),
+            name="pagos_recurrentes"
+        )
+        # Detectar exámenes pasados cada 2h
+        application.job_queue.run_repeating(
+            cron_detectar_examenes_pasados,
+            interval=7200,
+            first=60,
+            name="detectar_examenes_pasados"
+        )
+
+        # Menú de comandos actualizado
         await application.bot.set_my_commands([
             BotCommand("start",          "Iniciar / Bienvenida"),
             BotCommand("ayuda",          "Ver todo lo que puedo hacer"),
+            BotCommand("horario",        "Ver agenda del día"),
+            BotCommand("finanzas",       "Ver balance mensual"),
+            BotCommand("recordatorios",  "Ver recordatorios pendientes"),
             BotCommand("perfil",         "Ver tu perfil"),
             BotCommand("yo",             "Actualizar perfil"),
-            BotCommand("recordatorios",  "Ver recordatorios pendientes"),
-            BotCommand("contabilidad",   "Ver balance mensual"),
             BotCommand("limpiar",        "Borrar historial de chat"),
         ])
 
     app.post_init = post_init
 
-    logger.info("JARVIS 3.0 iniciando...")
+    logger.info("JARVIS 3.1 iniciando — módulos conectados: finanzas, horario, pre_render")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
