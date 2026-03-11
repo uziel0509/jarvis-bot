@@ -1887,6 +1887,9 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
     ok, n_msgs = verificar_limite(user_id, perfil)
     if not ok:
         if not suscripcion_activa(user_id):
+            # ── Mensaje al alumno ──
+            user  = update.effective_user
+            uname = f"@{user.username}" if user.username else user.first_name or "Sin nombre"
             await update.message.reply_text(
                 "🔒 *Acceso restringido*\n\n"
                 "JARVIS es un servicio de pago para estudiantes.\n\n"
@@ -1896,6 +1899,24 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
                 "Tu tutor IA disponible 24/7 para resolver cualquier ejercicio.",
                 parse_mode="Markdown"
             )
+            # ── Notificación al admin ──
+            if ADMIN_ID:
+                try:
+                    await context.bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=(
+                            f"🔔 *Alumno sin acceso intentó usar el bot*\n\n"
+                            f"👤 Nombre: {user.first_name or 'Sin nombre'} {user.last_name or ''}\n"
+                            f"🆔 User ID: `{user_id}`\n"
+                            f"📱 Username: {uname}\n"
+                            f"💬 Mensaje: _{texto[:100]}_\n\n"
+                            f"Para activarlo 1 mes:\n"
+                            f"`/activar {user_id} 1`"
+                        ),
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    logger.warning(f"No se pudo notificar al admin: {e}")
         else:
             plan = perfil.get("plan", "basico")
             limite = PLAN_BASICO_LIMITE if plan == "basico" else PLAN_FULL_LIMITE
