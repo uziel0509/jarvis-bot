@@ -113,9 +113,15 @@ FOTO_EJERCICIO = "ejercicio"
 # ─────────────────────────────────────────────
 # LOGGING
 # ─────────────────────────────────────────────
+# Logging a consola + archivo
+Path("/root/jarvis/logs").mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("/root/jarvis/logs/jarvis.log", encoding="utf-8")
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -197,6 +203,103 @@ def init_db():
         hora TEXT, notificado INTEGER DEFAULT 0,
         analizado INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    # ── TABLA CENTRAL DE USUARIOS ──
+    c.execute("""CREATE TABLE IF NOT EXISTS usuarios (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT, nombre TEXT,
+        primera_vez TEXT DEFAULT CURRENT_TIMESTAMP,
+        ultimo_mensaje TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    # ── SISTEMA DE SUSCRIPCIONES (pagos) ──
+    c.execute("""CREATE TABLE IF NOT EXISTS suscripciones (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER UNIQUE,
+        plan TEXT DEFAULT 'inactivo',
+        fecha_inicio TEXT,
+        fecha_vencimiento TEXT,
+        aprobado_por INTEGER,
+        notas TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    conn.commit()
+    conn.close()
+
+
+# ─────────────────────────────────────────────
+# SISTEMA DE SUSCRIPCIONES
+# ─────────────────────────────────────────────
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # Tu user_id de Telegram — setear en .env
+
+def suscripcion_activa(user_id: int) -> bool:
+    """Retorna True si el usuario tiene suscripción vigente."""
+    # Admin siempre tiene acceso
+    if user_id == ADMIN_ID:
+        return True
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT plan, fecha_vencimiento FROM suscripciones
+        WHERE user_id = ?
+    """, (user_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return False
+    plan, vencimiento = row
+    if plan == "inactivo":
+        return False
+    if vencimiento:
+        try:
+            from datetime import timezone
+            venc = datetime.fromisoformat(vencimiento)
+            return datetime.now() < venc
+        except Exception:
+            return False
+    return True  # sin fecha de vencimiento = vitalicio
+
+def get_suscripcion(user_id: int) -> dict:
+    """Retorna info de suscripción del usuario."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT plan, fecha_inicio, fecha_vencimiento FROM suscripciones WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return {"plan": "inactivo", "activo": False}
+    plan, inicio, vencimiento = row
+    activo = suscripcion_activa(user_id)
+    return {"plan": plan, "activo": activo, "inicio": inicio, "vencimiento": vencimiento}
+
+def activar_suscripcion(user_id: int, plan: str, meses: int, admin_id: int, notas: str = "") -> str:
+    """Activa o renueva suscripción de un usuario. Solo puede hacerlo el admin."""
+    from datetime import timezone
+    inicio = datetime.now()
+    venc   = inicio + timedelta(days=30 * meses)
+    conn   = sqlite3.connect(DB_PATH)
+    c      = conn.cursor()
+    c.execute("""
+        INSERT INTO suscripciones (user_id, plan, fecha_inicio, fecha_vencimiento, aprobado_por, notas)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            plan=excluded.plan,
+            fecha_inicio=excluded.fecha_inicio,
+            fecha_vencimiento=excluded.fecha_vencimiento,
+            aprobado_por=excluded.aprobado_por,
+            notas=excluded.notas
+    """, (user_id, plan, inicio.isoformat(), venc.isoformat(), admin_id, notas))
+    conn.commit()
+    conn.close()
+    return venc.strftime("%d/%m/%Y")
+
+def registrar_usuario(user_id: int, username: str):
+    """Registra o actualiza usuario en la tabla central."""
+    conn = sqlite3.connect(DB_PATH)
+    c    = conn.cursor()
+    c.execute("""
+        INSERT INTO usuarios (user_id, username, ultimo_mensaje)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+            username=excluded.username,
+            ultimo_mensaje=CURRENT_TIMESTAMP
+    """, (user_id, username or ""))
     conn.commit()
     conn.close()
 
@@ -296,6 +399,21 @@ def construir_system_prompt(perfil):
 # CONTROL DE USO MENSUAL
 # ─────────────────────────────────────────────
 def verificar_limite(user_id, perfil):
+    """
+    Verifica si el usuario puede usar el bot.
+    Primero chequea suscripción activa (tabla suscripciones).
+    Si no tiene suscripción, bloquea el acceso.
+    Admin siempre pasa.
+    """
+    # Admin siempre tiene acceso irrestricto
+    if user_id == ADMIN_ID:
+        return True, 99999
+
+    # Verificar suscripción activa
+    if not suscripcion_activa(user_id):
+        return False, 0
+
+    # Contar mensajes del mes (límite de uso para plan básico)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     ahora = datetime.now()
@@ -1528,7 +1646,24 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ob_recibir_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    nombre  = update.message.text.strip().split()[0].capitalize()
+    texto   = update.message.text.strip()
+
+    # Extraer nombre real — ignorar frases introductorias comunes
+    PREFIJOS = [
+        "me llamo", "mi nombre es", "soy", "me dicen",
+        "me llaman", "llamame", "llámame", "llámame",
+        "mi nombre:", "nombre:", "hola soy", "hola me llamo"
+    ]
+    texto_lower = texto.lower()
+    nombre_raw  = texto
+    for pref in PREFIJOS:
+        if texto_lower.startswith(pref):
+            nombre_raw = texto[len(pref):].strip()
+            break
+
+    # Tomar solo el primer nombre (no apellidos completos)
+    nombre = nombre_raw.split()[0].capitalize() if nombre_raw.split() else texto.split()[0].capitalize()
+
     context.user_data["ob_nombre"] = nombre
     await update.message.reply_text(
         f"Buena, {nombre}. ¿Qué carrera estudias?\n"
@@ -1745,16 +1880,29 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
     user_id = update.effective_user.id
     perfil  = cargar_perfil(user_id)
 
-    # Verificar límite mensual
+    # Registrar usuario en tabla central
+    registrar_usuario(user_id, update.effective_user.username or "")
+
+    # Verificar suscripción activa
     ok, n_msgs = verificar_limite(user_id, perfil)
     if not ok:
-        plan = perfil.get("plan", "basico")
-        limite = PLAN_BASICO_LIMITE if plan == "basico" else PLAN_FULL_LIMITE
-        await update.message.reply_text(
-            f"Llegaste al límite de {limite} mensajes del plan {plan.upper()}.\n\n"
-            f"Para seguir usando JARVIS sin límites, actualiza al plan FULL (S/50/mes).\n"
-            f"Escríbeme a @uziel0509 para activarlo."
-        )
+        if not suscripcion_activa(user_id):
+            await update.message.reply_text(
+                "🔒 *Acceso restringido*\n\n"
+                "JARVIS es un servicio de pago para estudiantes.\n\n"
+                "Para activar tu acceso:\n"
+                "👉 Escríbele a @uziel0509 con tu nombre y carrera\n"
+                "💰 Plan mensual: S/ 30/mes\n\n"
+                "Tu tutor IA disponible 24/7 para resolver cualquier ejercicio.",
+                parse_mode="Markdown"
+            )
+        else:
+            plan = perfil.get("plan", "basico")
+            limite = PLAN_BASICO_LIMITE if plan == "basico" else PLAN_FULL_LIMITE
+            await update.message.reply_text(
+                f"Llegaste al límite de {limite} mensajes del plan {plan.upper()}.\n\n"
+                f"Para más mensajes escríbeme a @uziel0509."
+            )
         return
 
     # Detectar intención
@@ -2013,11 +2161,22 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
         msgs, historial = construir_payload(user_id, texto, perfil)
 
         def llamar_ia():
-            return client.chat.completions.create(
-                model=modelo,
-                messages=msgs,
-                max_tokens=4000
-            )
+            # Fallback automático: si el modelo principal falla → usa MODELO_CHAT
+            modelos_intentar = [modelo]
+            if modelo != MODELO_CHAT:
+                modelos_intentar.append(MODELO_CHAT)
+            last_error = None
+            for m in modelos_intentar:
+                try:
+                    return client.chat.completions.create(
+                        model=m,
+                        messages=msgs,
+                        max_tokens=4000
+                    )
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"Modelo {m} falló: {e}. Intentando fallback...")
+            raise last_error
 
         resp = await loop.run_in_executor(None, llamar_ia)
         respuesta = resp.choices[0].message.content
@@ -2081,7 +2240,25 @@ async def manejar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ── Detectar tipo de foto esperada por contexto ──
-    tipo_foto = context.user_data.pop("esperando_foto", FOTO_EJERCICIO)
+    tipo_foto = context.user_data.pop("esperando_foto", None)
+
+    # Si no hay en context.user_data, revisar archivo temporal (cron post-examen)
+    if tipo_foto is None:
+        estado_path = Path(f"{PERFILES_DIR}/{user_id}/esperando_examen.json")
+        if estado_path.exists():
+            try:
+                estado = json.loads(estado_path.read_text())
+                # Solo válido si es del día de hoy
+                ts = datetime.fromisoformat(estado["ts"])
+                if (datetime.now() - ts).total_seconds() < 86400:  # 24h
+                    tipo_foto = FOTO_EXAMEN
+                    context.user_data["examen_id"]     = estado.get("exam_id")
+                    context.user_data["examen_materia"] = estado.get("materia", "la materia")
+                    estado_path.unlink()  # borrar el archivo después de leerlo
+            except Exception:
+                pass
+    if tipo_foto is None:
+        tipo_foto = FOTO_EJERCICIO
 
     msg_espera = await update.message.reply_text(
         "📅 Procesando tu horario..." if tipo_foto == FOTO_HORARIO else
@@ -2299,6 +2476,151 @@ async def cmd_horario(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(resumen_hoy(user_id), parse_mode="Markdown")
 
 
+
+# ─────────────────────────────────────────────
+# COMANDOS DE ADMINISTRACIÓN (solo admin)
+# ─────────────────────────────────────────────
+
+async def cmd_activar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Activa suscripción de un alumno.
+    Uso: /activar <user_id> <meses> [plan]
+    Ejemplo: /activar 123456789 1 full
+    """
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await update.message.reply_text("⛔ Sin acceso.")
+        return
+
+    args = context.args
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "Uso: /activar <user_id> <meses> [plan]\n"
+            "Ejemplo: /activar 123456789 1 full"
+        )
+        return
+
+    try:
+        target_id = int(args[0])
+        meses     = int(args[1])
+        plan      = args[2] if len(args) > 2 else "full"
+        venc      = activar_suscripcion(target_id, plan, meses, uid)
+        await update.message.reply_text(
+            f"✅ *Suscripción activada*\n\n"
+            f"👤 User ID: `{target_id}`\n"
+            f"📦 Plan: {plan.upper()}\n"
+            f"📅 Vence: {venc}",
+            parse_mode="Markdown"
+        )
+        # Notificar al alumno
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=f"🎉 *¡Tu acceso a JARVIS está activado!*\n\n"
+                     f"Plan: {plan.upper()} — Vence: {venc}\n\n"
+                     f"Ya puedes empezar. Escribe lo que necesitas o usa /ayuda.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            await update.message.reply_text("(No se pudo notificar al alumno directamente)")
+    except (ValueError, IndexError):
+        await update.message.reply_text("Formato incorrecto. Usa: /activar 123456789 1")
+
+
+async def cmd_revocar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Revoca suscripción. Uso: /revocar <user_id>"""
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await update.message.reply_text("⛔ Sin acceso.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("Uso: /revocar <user_id>")
+        return
+
+    try:
+        target_id = int(args[0])
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "UPDATE suscripciones SET plan='inactivo' WHERE user_id=?",
+            (target_id,)
+        )
+        conn.commit()
+        conn.close()
+        await update.message.reply_text(f"✅ Suscripción revocada para `{target_id}`", parse_mode="Markdown")
+    except ValueError:
+        await update.message.reply_text("User ID inválido.")
+
+
+async def cmd_alumnos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lista todos los alumnos con suscripción activa."""
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await update.message.reply_text("⛔ Sin acceso.")
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    c    = conn.cursor()
+    c.execute("""
+        SELECT s.user_id, u.username, s.plan, s.fecha_vencimiento
+        FROM suscripciones s
+        LEFT JOIN usuarios u ON s.user_id = u.user_id
+        WHERE s.plan != 'inactivo'
+        ORDER BY s.fecha_vencimiento DESC
+    """)
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text("No hay alumnos con suscripción activa.")
+        return
+
+    texto = "*📋 Alumnos activos*\n\n"
+    ahora = datetime.now()
+    for uid_al, username, plan, venc in rows:
+        try:
+            venc_dt = datetime.fromisoformat(venc) if venc else None
+            dias    = (venc_dt - ahora).days if venc_dt else "∞"
+            estado  = "✅" if (dias == "∞" or dias > 0) else "⚠️ VENCIDO"
+        except Exception:
+            dias, estado = "?", "⚠️"
+        nombre_al = f"@{username}" if username else f"ID:{uid_al}"
+        texto += f"{estado} {nombre_al} — {plan.upper()} — {dias}d restantes\n"
+
+    await update.message.reply_text(texto, parse_mode="Markdown")
+
+
+async def cmd_mystatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra el estado de suscripción del usuario."""
+    user_id = update.effective_user.id
+    info = get_suscripcion(user_id)
+
+    if not info["activo"]:
+        await update.message.reply_text(
+            "🔒 *Sin suscripción activa*\n\n"
+            "Escríbele a @uziel0509para activar tu acceso.\n"
+            "💰 Plan mensual: S/ 30/mes",
+            parse_mode="Markdown"
+        )
+        return
+
+    venc = info.get("vencimiento", "")
+    try:
+        venc_dt = datetime.fromisoformat(venc)
+        dias    = (venc_dt - datetime.now()).days
+        venc_str = venc_dt.strftime("%d/%m/%Y")
+    except Exception:
+        dias, venc_str = "∞", "Sin vencimiento"
+
+    await update.message.reply_text(
+        f"✅ *Suscripción activa*\n\n"
+        f"📦 Plan: {info['plan'].upper()}\n"
+        f"📅 Vence: {venc_str}\n"
+        f"⏳ Días restantes: {dias}",
+        parse_mode="Markdown"
+    )
+
 async def recargar_recordatorios_pendientes(app):
     conn = sqlite3.connect(DB_PATH)
     c    = conn.cursor()
@@ -2402,8 +2724,14 @@ async def cron_detectar_examenes_pasados(context):
             # Marcar como notificado — cuando mande la foto se procesa
             c.execute("UPDATE examenes_pendientes SET notificado=1 WHERE id=?", (exam_id,))
             conn.commit()
-            # Guardar en contexto del bot para que manejar_imagen sepa qué esperar
-            # Se hace cuando llegue la foto, via context.user_data
+            # Guardar estado en archivo temporal para que manejar_imagen sepa qué esperar
+            estado_path = Path(f"{PERFILES_DIR}/{uid}/esperando_examen.json")
+            estado_path.parent.mkdir(parents=True, exist_ok=True)
+            estado_path.write_text(json.dumps({
+                "exam_id": exam_id,
+                "materia": materia,
+                "ts": datetime.now().isoformat()
+            }))
         except Exception as e:
             logger.warning(f"No se pudo notificar examen pasado a {uid}: {e}")
     conn.close()
@@ -2434,9 +2762,13 @@ def main():
     app.add_handler(CommandHandler("yo",            cmd_yo))
     app.add_handler(CommandHandler("limpiar",       cmd_limpiar))
     app.add_handler(CommandHandler("recordatorios", cmd_recordatorios))
-    app.add_handler(CommandHandler("contabilidad",  cmd_contabilidad))
+    app.add_handler(CommandHandler("contabilidad",  cmd_finanzas))
     app.add_handler(CommandHandler("finanzas",      cmd_finanzas))
     app.add_handler(CommandHandler("horario",       cmd_horario))
+    app.add_handler(CommandHandler("mystatus",      cmd_mystatus))
+    app.add_handler(CommandHandler("activar",       cmd_activar))
+    app.add_handler(CommandHandler("revocar",       cmd_revocar))
+    app.add_handler(CommandHandler("alumnos",       cmd_alumnos))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manejar_mensaje))
     app.add_handler(MessageHandler(filters.PHOTO,                   manejar_imagen))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO,   manejar_voz))
@@ -2470,16 +2802,16 @@ def main():
             BotCommand("start",          "Iniciar / Bienvenida"),
             BotCommand("ayuda",          "Ver todo lo que puedo hacer"),
             BotCommand("horario",        "Ver agenda del día"),
-            BotCommand("finanzas",       "Ver balance mensual"),
+            BotCommand("finanzas",       "Ver mi balance mensual"),
             BotCommand("recordatorios",  "Ver recordatorios pendientes"),
+            BotCommand("mystatus",       "Ver mi suscripción"),
             BotCommand("perfil",         "Ver tu perfil"),
-            BotCommand("yo",             "Actualizar perfil"),
             BotCommand("limpiar",        "Borrar historial de chat"),
         ])
 
     app.post_init = post_init
 
-    logger.info("JARVIS 3.1 iniciando — módulos conectados: finanzas, horario, pre_render")
+    logger.info("JARVIS 3.2 iniciando — pagos, admin, fallback modelos, logging archivo")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
