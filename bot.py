@@ -2283,6 +2283,22 @@ async def manejar_voz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────────
 # RECARGA DE RECORDATORIOS AL INICIAR
 # ─────────────────────────────────────────────
+async def cmd_finanzas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra resumen financiero mensual completo."""
+    user_id = update.effective_user.id
+    await update.message.reply_text(resumen_mensual(user_id), parse_mode="Markdown")
+
+
+async def cmd_horario(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra la agenda del día."""
+    user_id = update.effective_user.id
+    if necesita_horario(user_id):
+        context.user_data["esperando_foto"] = FOTO_HORARIO
+        await update.message.reply_text(mensaje_pedir_foto_horario())
+    else:
+        await update.message.reply_text(resumen_hoy(user_id), parse_mode="Markdown")
+
+
 async def recargar_recordatorios_pendientes(app):
     conn = sqlite3.connect(DB_PATH)
     c    = conn.cursor()
