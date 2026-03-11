@@ -51,15 +51,12 @@ def registrar_gasto(user_id: int, monto: float, categoria: str, descripcion: str
 
     alerta = ""
     if data["limite_mensual"] > 0 and total_mes > data["limite_mensual"]:
-        alerta = f"
-⚠️ *Alerta:* Superaste tu límite de S/ {data['limite_mensual']:.2f}"
+        alerta = f"\n⚠️ *Alerta:* Superaste tu límite de S/ {data['limite_mensual']:.2f}"
     elif data["limite_mensual"] > 0 and total_mes > data["limite_mensual"] * 0.8:
-        alerta = f"
-⚠️ Ya usaste el 80% de tu límite mensual (S/ {data['limite_mensual']:.2f})"
+        alerta = f"\n⚠️ Ya usaste el 80% de tu límite mensual (S/ {data['limite_mensual']:.2f})"
 
     return (
-        f"✅ Gasto registrado: *S/ {monto:.2f}* en {categoria}
-"
+        f"✅ Gasto registrado: *S/ {monto:.2f}* en {categoria}\n"
         f"💸 Total gastado este mes: S/ {total_mes:.2f}"
         f"{alerta}"
     )
@@ -106,8 +103,7 @@ def resumen_mensual(user_id: int) -> str:
     cats: dict = {}
     for g in gastos_mes:
         cats[g["categoria"]] = cats.get(g["categoria"], 0) + g["monto"]
-    cat_txt = "
-".join(
+    cat_txt = "\n".join(
         f"  • {c}: S/ {m:.2f}" for c, m in sorted(cats.items(), key=lambda x: -x[1])
     ) or "  Sin gastos registrados"
 
@@ -119,22 +115,14 @@ def resumen_mensual(user_id: int) -> str:
     if total_gastos > 0 and data["limite_mensual"] > 0 and dia > 0:
         proy = (total_gastos / dia) * 30
         if proy > data["limite_mensual"]:
-            proyeccion = f"
-⚠️ *Proyección:* gastarás ~S/ {proy:.2f} este mes (límite: S/ {data['limite_mensual']:.2f})"
+            proyeccion = f"\n⚠️ *Proyección:* gastarás ~S/ {proy:.2f} este mes (límite: S/ {data['limite_mensual']:.2f})"
 
     return (
-        f"📊 *Resumen Financiero — {datetime.now().strftime('%B %Y')}*
-
-"
-        f"💰 Ingresos: S/ {total_ingresos:.2f}
-"
-        f"💸 Gastos:   S/ {total_gastos:.2f}
-"
-        f"📈 Balance:  S/ {balance:.2f} ({estado})
-
-"
-        f"*Por categoría:*
-{cat_txt}"
+        f"📊 *Resumen Financiero — {datetime.now().strftime('%B %Y')}*\n\n"
+        f"💰 Ingresos: S/ {total_ingresos:.2f}\n"
+        f"💸 Gastos:   S/ {total_gastos:.2f}\n"
+        f"📈 Balance:  S/ {balance:.2f} ({estado})\n\n"
+        f"*Por categoría:*\n{cat_txt}"
         f"{proyeccion}"
     )
 
@@ -146,10 +134,8 @@ def check_pagos_hoy(user_id: int) -> str:
     pagos = [p for p in data["pagos_recurrentes"] if p["dia_mes"] == hoy]
     if not pagos:
         return ""
-    lista = "
-".join(f"  • {p['nombre']}: S/ {p['monto']:.2f}" for p in pagos)
-    return f"🔔 *Pagos recurrentes de hoy:*
-{lista}"
+    lista = "\n".join(f"  • {p['nombre']}: S/ {p['monto']:.2f}" for p in pagos)
+    return f"🔔 *Pagos recurrentes de hoy:*\n{lista}"
 
 
 def prompt_interpretar_finanzas(texto: str) -> str:
@@ -168,3 +154,15 @@ Determina la intención y extrae los datos. Responde SOLO en JSON:
   "dia_mes": null
 }}
 Si no puedes extraer un campo, ponlo como null."""
+
+
+def get_pagos_hoy(user_id: int) -> list:
+    """Retorna lista de pagos recurrentes que vencen hoy."""
+    from datetime import datetime
+    data = _cargar(user_id)
+    hoy_dia = datetime.now().day
+    return [
+        {"concepto": p["nombre"], "monto": p["monto"]}
+        for p in data.get("pagos_recurrentes", [])
+        if p.get("dia_mes") == hoy_dia
+    ]
