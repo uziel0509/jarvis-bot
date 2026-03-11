@@ -66,18 +66,11 @@ def necesita_horario(user_id: int) -> bool:
 
 def mensaje_pedir_foto_horario() -> str:
     return (
-        "📅 *Para organizarte mejor, necesito tu horario de clases.*
-
-"
-        "Mándame una foto de tu horario. Puede ser:
-"
-        "  📸 Foto de tu cuaderno o agenda
-"
-        "  🖥️ Captura del sistema de tu universidad
-"
-        "  📋 Foto de cualquier lugar donde lo tengas
-
-"
+        "📅 *Para organizarte mejor, necesito tu horario de clases.*\n\n"
+        "Mándame una foto de tu horario. Puede ser:\n"
+        "  📸 Foto de tu cuaderno o agenda\n"
+        "  🖥️ Captura del sistema de tu universidad\n"
+        "  📋 Foto de cualquier lugar donde lo tengas\n\n"
         "Jarvis lo leerá y activará tus recordatorios automáticamente. 🎯"
     )
 
@@ -98,15 +91,10 @@ def guardar_horario_extraido(user_id: int, clases: list) -> str:
     resumen = ""
     for d in orden:
         if d in dias:
-            resumen += f"
-*{d.capitalize()}:*
-" + "
-".join(f"  • {h}" for h in dias[d])
+            resumen += f"\n*{d.capitalize()}:*\n" + "\n".join(f"  • {h}" for h in dias[d])
 
     return (
-        f"✅ *Horario detectado:*{resumen}
-
-"
+        f"✅ *Horario detectado:*{resumen}\n\n"
         "¿Está correcto? Responde *'sí'* para confirmar o dime qué corregir."
     )
 
@@ -154,40 +142,27 @@ def resumen_hoy(user_id: int) -> str:
     if not any([clases_hoy, examenes_hoy, entregas_hoy, exam_manana]):
         return "📅 Hoy no tienes clases ni eventos registrados."
 
-    txt = f"🌅 *Resumen de hoy — {datetime.now().strftime('%d/%m/%Y')}*
-"
+    txt = f"🌅 *Resumen de hoy — {datetime.now().strftime('%d/%m/%Y')}*\n"
 
     if clases_hoy:
-        txt += "
-*📚 Clases:*
-"
+        txt += "\n*📚 Clases:*\n"
         for c in sorted(clases_hoy, key=lambda x: x.get("hora_inicio","00:00")):
-            txt += f"  • {c.get('hora_inicio','?')}-{c.get('hora_fin','?')}: {c.get('materia','?')}
-"
+            txt += f"  • {c.get('hora_inicio','?')}-{c.get('hora_fin','?')}: {c.get('materia','?')}\n"
 
     if examenes_hoy:
-        txt += "
-*🧪 Examen HOY:*
-"
+        txt += "\n*🧪 Examen HOY:*\n"
         for e in examenes_hoy:
-            txt += f"  ⚠️ {e['materia']} a las {e.get('hora','?')}
-"
+            txt += f"  ⚠️ {e['materia']} a las {e.get('hora','?')}\n"
 
     if entregas_hoy:
-        txt += "
-*📝 Entregas hoy:*
-"
+        txt += "\n*📝 Entregas hoy:*\n"
         for e in entregas_hoy:
-            txt += f"  • {e['descripcion']} a las {e.get('hora','?')}
-"
+            txt += f"  • {e['descripcion']} a las {e.get('hora','?')}\n"
 
     if exam_manana:
-        txt += "
-*⏰ Examen MAÑANA — repasa hoy:*
-"
+        txt += "\n*⏰ Examen MAÑANA — repasa hoy:*\n"
         for e in exam_manana:
-            txt += f"  ⚠️ {e['materia']} a las {e.get('hora','?')}
-"
+            txt += f"  ⚠️ {e['materia']} a las {e.get('hora','?')}\n"
 
     return txt
 
@@ -205,13 +180,9 @@ def get_examenes_sin_analizar(user_id: int) -> list:
 
 def mensaje_pedir_foto_examen(materia: str) -> str:
     return (
-        f"📝 *¿Cómo te fue en el examen de {materia}?*
-
-"
+        f"📝 *¿Cómo te fue en el examen de {materia}?*\n\n"
         "Si quieres saber en qué fallaste y qué mejorar, "
-        "mándame una foto de tu examen con tus respuestas. 📸
-
-"
+        "mándame una foto de tu examen con tus respuestas. 📸\n\n"
         "_Identifico errores conceptuales, errores de cálculo y te doy un plan de mejora._"
     )
 
