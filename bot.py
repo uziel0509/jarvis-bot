@@ -640,70 +640,104 @@ LATEX_MAP = {
 }
 
 def limpiar_latex(texto):
-    """Convierte LaTeX crudo a texto legible — limpieza agresiva."""
+    """Convierte LaTeX/Markdown a HTML limpio para Telegram."""
+    import html as _html
     if not texto:
         return texto
 
-    # Eliminar bloques de código LaTeX de documento completo
-    texto = re.sub(r'```(?:tex|latex).*?```', '', texto, flags=re.DOTALL)
-    texto = re.sub(r'\\documentclass.*?\\end\{document\}', '', texto, flags=re.DOTALL)
-    texto = re.sub(r'\\documentclass[^\n]*\n', '', texto)
-    texto = re.sub(r'\\usepackage[^\n]*\n', '', texto)
-    texto = re.sub(r'\\geometry[^\n]*\n', '', texto)
-    texto = re.sub(r'\\begin\{document\}[^\n]*\n?', '', texto)
-    texto = re.sub(r'\\end\{document\}[^\n]*\n?', '', texto)
-    texto = re.sub(r'\\maketitle[^\n]*\n?', '', texto)
-    texto = re.sub(r'\\author\{[^}]*\}', '', texto)
-    texto = re.sub(r'\\date\{[^}]*\}', '', texto)
-    texto = re.sub(r'\\title\{([^}]*)\}', r'\1', texto)
-    texto = re.sub(r'\\section\*?\{([^}]*)\}', r'\n### \1\n', texto)
-    texto = re.sub(r'\\subsection\*?\{([^}]*)\}', r'\n**\1**\n', texto)
+    # ── Bloques de código ──
+    import re as _re
+    bloques_codigo = {}
+    contador = [0]
+    def guardar_bloque(m):
+        key = f"__BLOQUE_{contador[0]}__"
+        lang = m.group(1) or ""
+        codigo = m.group(2).strip()
+        bloques_codigo[key] = f"<pre><code>{_html.escape(codigo)}</code></pre>"
+        contador[0] += 1
+        return key
+    texto = _re.sub(r"```(?:\w+)?\n?(.*?)```", guardar_bloque, texto, flags=_re.DOTALL)
 
-    # Letras griegas y símbolos (LATEX_MAP)
-    for latex, unicode_char in LATEX_MAP.items():
-        texto = texto.replace(latex, unicode_char)
+    # ── Limpiar LaTeX de documento ──
+    texto = _re.sub(r"\\documentclass.*?\\end\{document\}", "", texto, flags=_re.DOTALL)
+    texto = _re.sub(r"\\(?:usepackage|geometry|maketitle|author|date)\b[^\n]*\n?", "", texto)
+    texto = _re.sub(r"\\begin\{document\}[^\n]*\n?", "", texto)
+    texto = _re.sub(r"\\end\{document\}[^\n]*\n?", "", texto)
+    texto = _re.sub(r"\\title\{([^}]*)\}", r"\1", texto)
+    texto = _re.sub(r"\\section\*?\{([^}]*)\}", r"\n\1\n", texto)
+    texto = _re.sub(r"\\subsection\*?\{([^}]*)\}", r"\n\1\n", texto)
 
-    # Fórmulas: \frac{a}{b} → (a/b)
-    texto = re.sub(r'\\frac\{([^}]+)\}\{([^}]+)\}', r'(\1/\2)', texto)
-    texto = re.sub(r'\\sqrt\{([^}]+)\}', r'√(\1)', texto)
-    texto = re.sub(r'\\sqrt\b', '√', texto)
+    # ── Fórmulas LaTeX → texto legible ──
+    texto = _re.sub(r"\\frac\{([^}]+)\}\{([^}]+)\}", r"(\1/\2)", texto)
+    texto = _re.sub(r"\\sqrt\{([^}]+)\}", r"√(\1)", texto)
+    texto = _re.sub(r"\\sqrt\b", "√", texto)
+    texto = _re.sub(r"\\cdot\b", "·", texto)
+    texto = _re.sub(r"\\times\b", "×", texto)
+    texto = _re.sub(r"\\pm\b", "±", texto)
+    texto = _re.sub(r"\\approx\b", "≈", texto)
+    texto = _re.sub(r"\\neq\b", "≠", texto)
+    texto = _re.sub(r"\\leq\b", "≤", texto)
+    texto = _re.sub(r"\\geq\b", "≥", texto)
+    texto = _re.sub(r"\\rightarrow\b", "→", texto)
+    texto = _re.sub(r"\\Delta\b", "Δ", texto)
+    texto = _re.sub(r"\\alpha\b", "α", texto)
+    texto = _re.sub(r"\\beta\b", "β", texto)
+    texto = _re.sub(r"\\gamma\b", "γ", texto)
+    texto = _re.sub(r"\\lambda\b", "λ", texto)
+    texto = _re.sub(r"\\mu\b", "μ", texto)
+    texto = _re.sub(r"\\pi\b", "π", texto)
+    texto = _re.sub(r"\\Omega\b", "Ω", texto)
+    texto = _re.sub(r"\\rho\b", "ρ", texto)
+    texto = _re.sub(r"\\sigma\b", "σ", texto)
+    texto = _re.sub(r"\\theta\b", "θ", texto)
 
-    # Superíndices
-    sup_map = {'0':'⁰','1':'¹','2':'²','3':'³','4':'⁴','5':'⁵',
-               '6':'⁶','7':'⁷','8':'⁸','9':'⁹','n':'ⁿ'}
+    # ── Superíndices y subíndices ──
+    sup_map = {"0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵",
+               "6":"⁶","7":"⁷","8":"⁸","9":"⁹","n":"ⁿ","-":"⁻","+":"⁺"}
+    sub_map = {"0":"₀","1":"₁","2":"₂","3":"₃","4":"₄","5":"₅",
+               "6":"₆","7":"₇","8":"₈","9":"₉","n":"ₙ","a":"ₐ"}
     def repl_sup(m):
-        return ''.join(sup_map.get(ch, ch) for ch in m.group(1))
-    texto = re.sub(r'\^\{([^}]+)\}', repl_sup, texto)
-    texto = re.sub(r'\^(\d)', lambda m: sup_map.get(m.group(1), m.group(1)), texto)
+        return "".join(sup_map.get(c, c) for c in m.group(1))
+    def repl_sub(m):
+        return "".join(sub_map.get(c, c) for c in m.group(1))
+    texto = _re.sub(r"\^\{([^}]+)\}", repl_sup, texto)
+    texto = _re.sub(r"\^([-\d])", lambda m: sup_map.get(m.group(1), m.group(1)), texto)
+    texto = _re.sub(r"_\{([^}]+)\}", repl_sub, texto)
 
-    # Subíndices
-    texto = re.sub(r'_\{([^}]+)\}', r'_\1', texto)
+    # ── Quitar delimitadores matemáticos ──
+    texto = _re.sub(r"\\\[(.+?)\\\]", r"\1", texto, flags=_re.DOTALL)
+    texto = _re.sub(r"\\\((.+?)\\\)", r"\1", texto, flags=_re.DOTALL)
+    texto = _re.sub(r"\$\$(.+?)\$\$", r"\1", texto, flags=_re.DOTALL)
+    texto = _re.sub(r"\$(.+?)\$", r"\1", texto)
 
-    # Delimitadores matemáticos
-    texto = re.sub(r'\\\[(.+?)\\\]', r'\1', texto, flags=re.DOTALL)
-    texto = re.sub(r'\\\((.+?)\\\)', r'\1', texto, flags=re.DOTALL)
-    texto = re.sub(r'\$\$(.+?)\$\$', r'\1', texto, flags=re.DOTALL)
-    texto = re.sub(r'\$(.+?)\$', r'\1', texto)
+    # ── Escapar HTML (para no romper Telegram) ──
+    texto = _html.escape(texto)
 
-    # Comandos de formato
-    texto = re.sub(r'\\text\{([^}]+)\}', r'\1', texto)
-    texto = re.sub(r'\\(bf|it|rm|mathbf|mathit|mathrm|mathbb|textbf|textit)\{([^}]+)\}', r'\2', texto)
-    texto = re.sub(r'\\(left|right|big|Big|bigg|Bigg)[()\[\]|{}]?', '', texto)
+    # ── Convertir Markdown a HTML de Telegram ──
+    # Títulos → negrita grande
+    texto = _re.sub(r"^#{1,3} (.+)$", r"<b>\1</b>", texto, flags=_re.MULTILINE)
+    # Negrita **texto** o __texto__
+    texto = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", texto)
+    texto = _re.sub(r"__(.+?)__", r"<b>\1</b>", texto)
+    # Cursiva *texto* o _texto_
+    texto = _re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<i>\1</i>", texto)
+    # Código inline `texto`
+    texto = _re.sub(r"`([^`]+)`", r"<code>\1</code>", texto)
+    # Pasos numerados: "1." o "Paso 1:" → con código inline para el número
+    texto = _re.sub(r"^(\d+\.\s+)", r"<b>\1</b>", texto, flags=_re.MULTILINE)
+    texto = _re.sub(r"^(Paso\s+\d+[:.])", r"<b>\1</b>", texto, flags=_re.MULTILINE)
+    # Bullet points - → •
+    texto = _re.sub(r"^\s*[-•]\s+", "• ", texto, flags=_re.MULTILINE)
+    # Limpiar líneas vacías excesivas
+    texto = _re.sub(r"\n{3,}", "\n\n", texto)
 
-    # Eliminar comandos LaTeX sueltos restantes
-    texto = re.sub(r'\\[a-zA-Z]+\*?(?:\{[^}]*\})*', '', texto)
-
-    # Limpiar llaves y símbolos sobrantes
-    texto = texto.replace('{', '').replace('}', '')
-    texto = re.sub(r' {2,}', ' ', texto)
-    texto = re.sub(r'\n{3,}', '\n\n', texto)
+    # ── Restaurar bloques de código ──
+    for key, bloque in bloques_codigo.items():
+        texto = texto.replace(_html.escape(key), bloque)
 
     return texto.strip()
 
 
-# ─────────────────────────────────────────────
-# RENDERIZADOR DE FÓRMULAS MATEMÁTICAS (matplotlib)
-# ─────────────────────────────────────────────
 def renderizar_formula(formula_latex, ancho_px=500, alto_px=80, fontsize=16):
     """
     Renderiza una fórmula LaTeX como imagen PNG usando matplotlib.mathtext.
@@ -1651,9 +1685,12 @@ async def enviar_recordatorio(app, user_id, rec_id, titulo, mensaje):
 # ─────────────────────────────────────────────
 async def safe_edit(msg, texto_nuevo):
     try:
-        await msg.edit_text(texto_nuevo)
+        await msg.edit_text(texto_nuevo, parse_mode="HTML")
     except Exception:
-        pass
+        try:
+            await msg.edit_text(texto_nuevo)
+        except Exception:
+            pass
 
 async def safe_delete(msg):
     try:
