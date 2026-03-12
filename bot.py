@@ -2051,10 +2051,20 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
                 from modulos.agente_academico import resolver_y_generar_pdf
                 texto_para_pdf = texto
                 if pide_pdf and not es_ejercicio:
-                    for msg in reversed(historial[:-1]):
-                        if msg['role'] == 'user' and len(msg.get('content','')) > 50:
-                            texto_para_pdf = msg['content']
-                            break
+                    # PRIMERO: leer desde archivo de sesión (guardado cuando llegó la foto)
+                    try:
+                        import json as _json
+                        _sp = f"/root/jarvis/perfiles/{user_id}/ultimo_ejercicio.json"
+                        with open(_sp) as _f:
+                            _data = _json.load(_f)
+                            texto_para_pdf = _data.get("texto", texto)
+                    except Exception:
+                        # Fallback: buscar en historial mensajes largos que no sean "en pdf"
+                        for msg in reversed(historial[:-1]):
+                            c = msg.get('content', '')
+                            if msg['role'] == 'user' and len(c) > 80:
+                                texto_para_pdf = c.replace('[IMAGEN con instrucción:', '').strip()
+                                break
                 path_pdf, _ = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: resolver_y_generar_pdf(client, texto_para_pdf if 'texto_para_pdf' in dir() else texto, user_id, perfil)
