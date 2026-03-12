@@ -2006,8 +2006,9 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
         es_ejercicio    = intencion in ("ejercicio_dificil", "ejercicio_simple")
         respuesta_larga = len(respuesta) > 600
         tiene_pasos     = bool(re.search(r'paso\s+\d+|step\s+\d+|\d+\.', respuesta, re.IGNORECASE))
+        pide_pdf        = bool(re.search(r'\bpdf\b|en pdf|como pdf|en documento|manda.*pdf|envia.*pdf|quiero.*pdf|genera.*pdf|crea.*pdf', texto, re.IGNORECASE))
 
-        if es_ejercicio and (respuesta_larga or tiene_pasos):
+        if (es_ejercicio and (respuesta_larga or tiene_pasos)) or pide_pdf:
             await safe_delete(msg_espera)
             try:
                 from modulos.agente_academico import resolver_y_generar_pdf
