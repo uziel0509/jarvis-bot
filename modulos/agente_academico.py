@@ -23,19 +23,15 @@ logger = logging.getLogger(__name__)
 
 ARCHIVOS_DIR = "/root/jarvis/archivos"
 
-# ── Registrar fuentes Unicode (DejaVu soporta sub/superíndices) ──
+# ── Registrar fuentes DejaVu Unicode (sub/superíndices perfectos) ──
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 _FONT_DIR = "/usr/share/fonts/truetype/dejavu"
-try:
-    pdfmetrics.registerFont(TTFont("DejaVu",      f"{_FONT_DIR}/DejaVuSans.ttf"))
-    pdfmetrics.registerFont(TTFont("DejaVu-Bold", f"{_FONT_DIR}/DejaVuSans-Bold.ttf"))
-    _FONT       = "DejaVu"
-    _FONT_BOLD  = "DejaVu-Bold"
-except Exception:
-    _FONT       = "Helvetica"
-    _FONT_BOLD  = "Helvetica-Bold"
+pdfmetrics.registerFont(TTFont("DejaVu",      f"{_FONT_DIR}/DejaVuSans.ttf"))
+pdfmetrics.registerFont(TTFont("DejaVu-Bold", f"{_FONT_DIR}/DejaVuSans-Bold.ttf"))
+_FONT      = "DejaVu"
+_FONT_BOLD = "DejaVu-Bold"
 Path(ARCHIVOS_DIR).mkdir(parents=True, exist_ok=True)
 
 
