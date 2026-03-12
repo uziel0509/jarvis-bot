@@ -77,14 +77,40 @@ Responde ÚNICAMENTE con un objeto JSON válido.
 - Para cálculo: muestra el procedimiento completo
 - Indica la opción correcta si el problema tiene alternativas (a, b, c, d, e)
 
-═══ REGLA N°3: UNICODE REAL ═══
+═══ REGLA N°3: CERO LATEX — TEXTO PLANO SIEMPRE ═══
+PROHIBIDO absolutamente: \int \frac \cdot \sum \sqrt \infty \left \right \alpha \beta
+PROHIBIDO: cualquier comando que empiece con \ (backslash)
+PROHIBIDO: $...$ o $$...$$ o \(...\) o \[...\]
+
+USA TEXTO PLANO con estos reemplazos OBLIGATORIOS:
+  \int f(x)dx          →  ∫ f(x) dx
+  \int_a^b f(x)dx      →  ∫(a→b) f(x) dx
+  \frac{a}{b}          →  (a)/(b)
+  \frac{d}{dx}         →  d/dx
+  x^2                   →  x²
+  x^{n+1}              →  x^(n+1)
+  \sqrt{x}             →  √x
+  \infty               →  ∞
+  \cdot                →  ·
+  \times               →  ×
+  \alpha \beta \gamma  →  α β γ
+  \Delta \Sigma        →  Δ Σ
+  \leq \geq            →  ≤ ≥
+  \pm                  →  ±
+
 SUBÍNDICES:   ₀ ₁ ₂ ₃ ₄ ₅ ₆ ₇ ₈ ₉ ₙ ₘ ₐ
 SUPERÍNDICES: ⁰ ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁻ ⁺ ⁿ
 
-CORRECTO:   H₂O  CO₂  C₈H₁₈  mol⁻¹  10⁶  Nₐ  m³  mg·m⁻³  10⁻³
-INCORRECTO: HnO  COn  CnHnn  moln1  10n6  Nn  mn  mg·mn3  10n3
+EJEMPLOS CORRECTOS de integrales:
+  "∫ x² dx = x³/3 + C"
+  "∫(0→2) (3x² + 2x) dx"
+  "F(x) = (x³)/3 + (x²)/2 + C"
+  "∫(0→π) sen(x) dx = [-cos(x)](0→π) = 2"
+  "u = x²  →  du = 2x dx"
+  "I = (1/2) ∫ u³ du = u⁴/8 + C"
 
-OPERADORES: × · ÷ ± ≤ ≥ ≠ ≈ ∑ √ Δ →
+EJEMPLOS CORRECTOS de química:
+  H₂O  CO₂  C₈H₁₈  mol⁻¹  10⁶  Nₐ  m³  mg·m⁻³  10⁻³
 
 ═══ REGLA N°4: MÚLTIPLES EJERCICIOS ═══
 - Cada ejercicio es independiente en el array
