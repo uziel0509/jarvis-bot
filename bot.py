@@ -2231,6 +2231,16 @@ async def manejar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             img_bytes, caption, user_id, perfil
         )
 
+        # Guardar el ejercicio real en sesión para cuando pidan PDF después
+        try:
+            import json as _json
+            _sesion_path = f"/root/jarvis/perfiles/{user_id}/ultimo_ejercicio.json"
+            Path(_sesion_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(_sesion_path, "w") as _f:
+                _json.dump({"texto": contexto_visual, "tipo": "imagen"}, _f)
+        except Exception:
+            pass
+
         historial = cargar_historial(user_id)
         historial.append({"role": "user",      "content": f"[IMAGEN con instrucción: '{caption}'] {contexto_visual[:300]}"})
         historial.append({"role": "assistant", "content": solucion})
