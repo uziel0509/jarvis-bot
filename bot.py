@@ -2012,9 +2012,15 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
             await safe_delete(msg_espera)
             try:
                 from modulos.agente_academico import resolver_y_generar_pdf
+                texto_para_pdf = texto
+                if pide_pdf and not es_ejercicio:
+                    for msg in reversed(historial[:-1]):
+                        if msg['role'] == 'user' and len(msg.get('content','')) > 50:
+                            texto_para_pdf = msg['content']
+                            break
                 path_pdf, _ = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: resolver_y_generar_pdf(client, texto, user_id, perfil)
+                    lambda: resolver_y_generar_pdf(client, texto_para_pdf if 'texto_para_pdf' in dir() else texto, user_id, perfil)
                 )
                 await update.message.reply_document(
                     document=open(path_pdf, "rb"),
