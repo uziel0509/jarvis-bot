@@ -22,6 +22,20 @@ from reportlab.platypus import (
 logger = logging.getLogger(__name__)
 
 ARCHIVOS_DIR = "/root/jarvis/archivos"
+
+# ── Registrar fuentes Unicode (DejaVu soporta sub/superíndices) ──
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+_FONT_DIR = "/usr/share/fonts/truetype/dejavu"
+try:
+    pdfmetrics.registerFont(TTFont("DejaVu",      f"{_FONT_DIR}/DejaVuSans.ttf"))
+    pdfmetrics.registerFont(TTFont("DejaVu-Bold", f"{_FONT_DIR}/DejaVuSans-Bold.ttf"))
+    _FONT       = "DejaVu"
+    _FONT_BOLD  = "DejaVu-Bold"
+except Exception:
+    _FONT       = "Helvetica"
+    _FONT_BOLD  = "Helvetica-Bold"
 Path(ARCHIVOS_DIR).mkdir(parents=True, exist_ok=True)
 
 
@@ -101,58 +115,58 @@ def _estilos():
     return {
         "portada_title": ParagraphStyle(
             "portada_title",
-            fontName="Helvetica-Bold", fontSize=26,
+            fontName=_FONT_BOLD, fontSize=26,
             textColor=colors.white, leading=32, spaceAfter=4
         ),
         "portada_sub": ParagraphStyle(
             "portada_sub",
-            fontName="Helvetica", fontSize=12,
+            fontName=_FONT, fontSize=12,
             textColor=colors.HexColor("#a5b4fc"), leading=18
         ),
         "portada_info": ParagraphStyle(
             "portada_info",
-            fontName="Helvetica", fontSize=10,
+            fontName=_FONT, fontSize=10,
             textColor=colors.HexColor("#818cf8"), leading=15
         ),
         "ej_titulo": ParagraphStyle(
             "ej_titulo",
-            fontName="Helvetica-Bold", fontSize=12,
+            fontName=_FONT_BOLD, fontSize=12,
             textColor=C_EJ_LINE, leading=17
         ),
         "seccion": ParagraphStyle(
             "seccion",
-            fontName="Helvetica-Bold", fontSize=9,
+            fontName=_FONT_BOLD, fontSize=9,
             textColor=C_GRAY, leading=13,
             spaceAfter=3
         ),
         "dato": ParagraphStyle(
             "dato",
-            fontName="Helvetica", fontSize=10,
+            fontName=_FONT, fontSize=10,
             textColor=C_TEXT_SOFT, leading=15
         ),
         "paso_titulo": ParagraphStyle(
             "paso_titulo",
-            fontName="Helvetica-Bold", fontSize=10,
+            fontName=_FONT_BOLD, fontSize=10,
             textColor=C_ACCENT, leading=14
         ),
         "paso_calculo": ParagraphStyle(
             "paso_calculo",
-            fontName="Helvetica", fontSize=10,
+            fontName=_FONT, fontSize=10,
             textColor=C_TEXT, leading=15
         ),
         "resultado_label": ParagraphStyle(
             "resultado_label",
-            fontName="Helvetica-Bold", fontSize=9,
+            fontName=_FONT_BOLD, fontSize=9,
             textColor=C_RESULT_L, leading=13
         ),
         "resultado_valor": ParagraphStyle(
             "resultado_valor",
-            fontName="Helvetica-Bold", fontSize=12,
+            fontName=_FONT_BOLD, fontSize=12,
             textColor=colors.HexColor("#92400e"), leading=17
         ),
         "pie": ParagraphStyle(
             "pie",
-            fontName="Helvetica", fontSize=8,
+            fontName=_FONT, fontSize=8,
             textColor=C_GRAY
         ),
     }
@@ -232,7 +246,7 @@ def _bloque_paso(num, titulo, calculo, W, s):
     # número del paso — círculo visual con tabla anidada
     num_cell = Table(
         [[Paragraph(f"<b>{num}</b>", ParagraphStyle(
-            "num", fontName="Helvetica-Bold", fontSize=11,
+            "num", fontName=_FONT_BOLD, fontSize=11,
             textColor=colors.white, leading=14, alignment=1
         ))]],
         colWidths=[0.65*cm], rowHeights=[0.65*cm]
@@ -318,7 +332,7 @@ def crear_pdf_desde_json(datos_json, user_id, perfil=None):
     # ── pie de página ──
     def _pie(canvas, doc_):
         canvas.saveState()
-        canvas.setFont("Helvetica", 8)
+        canvas.setFont(_FONT, 8)
         canvas.setFillColor(C_GRAY)
         canvas.drawCentredString(
             A4[0] / 2, 1.2*cm,
