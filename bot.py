@@ -58,7 +58,6 @@ from modulos.horario import (
     guardar_resultado_examen, PROMPT_EXTRAER_HORARIO, PROMPT_ANALIZAR_EXAMEN
 )
 from modulos.pre_render import procesar_output, elementos_a_texto_plano
-from modulos.agente_academico import crear_pdf_academico as _crear_pdf_limpio
 
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
@@ -735,251 +734,25 @@ def renderizar_formula(formula_latex, ancho_px=500, alto_px=80, fontsize=16):
 # ─────────────────────────────────────────────
 # GENERADOR DE PDF PROFESIONAL CON MATEMÁTICAS
 # ─────────────────────────────────────────────
-def _crear_pdf_limpio(contenido, user_id, titulo="Solución de Ejercicio", perfil=None):
-    """
-    Crea un PDF profesional con:
-    - Portada con nombre del alumno y fecha
-    - Fórmulas renderizadas visualmente (no LaTeX crudo)
-    - Pasos numerados con diseño limpio
-    - Recuadro para el resultado final
-    - Pie de página JARVIS
-    """
-    perfil = perfil or {}
-    nombre = perfil.get("nombre", "Alumno")
-    carrera = perfil.get("carrera", "")
-    universidad = perfil.get("universidad", "")
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path_pdf = f"{ARCHIVOS_DIR}/solucion_{user_id}_{timestamp}.pdf"
-
-    # ── Colores del tema ──
-    COLOR_PRIMARY   = colors.HexColor("#1a1a2e")   # Azul marino oscuro
-    COLOR_SECONDARY = colors.HexColor("#16213e")   # Azul secundario
-    COLOR_ACCENT    = colors.HexColor("#0f3460")   # Acento azul
-    COLOR_GOLD      = colors.HexColor("#e94560")   # Rojo/coral para resultado
-    COLOR_LIGHT     = colors.HexColor("#f5f5f5")   # Fondo claro pasos
-    COLOR_WHITE     = colors.white
-    COLOR_STEP_BG   = colors.HexColor("#eef2ff")   # Fondo pasos azul claro
-
-    # ── Estilos ──
-    styles = getSampleStyleSheet()
-
-    style_titulo_doc = ParagraphStyle(
-        'TituloDoc', fontSize=20, fontName='Helvetica-Bold',
-        textColor=COLOR_WHITE, alignment=TA_CENTER, spaceAfter=6
-    )
-    style_subtitulo_doc = ParagraphStyle(
-        'SubtituloDoc', fontSize=12, fontName='Helvetica',
-        textColor=colors.HexColor("#aaaacc"), alignment=TA_CENTER, spaceAfter=4
-    )
-    style_body = ParagraphStyle(
-        'Body', fontSize=11, fontName='Helvetica',
-        textColor=COLOR_PRIMARY, alignment=TA_JUSTIFY,
-        spaceAfter=8, leading=16
-    )
-    style_step_header = ParagraphStyle(
-        'StepHeader', fontSize=12, fontName='Helvetica-Bold',
-        textColor=COLOR_ACCENT, spaceAfter=4, spaceBefore=10
-    )
-    style_step_body = ParagraphStyle(
-        'StepBody', fontSize=11, fontName='Helvetica',
-        textColor=COLOR_PRIMARY, leftIndent=12, leading=16
-    )
-    style_resultado = ParagraphStyle(
-        'Resultado', fontSize=13, fontName='Helvetica-Bold',
-        textColor=COLOR_WHITE, alignment=TA_CENTER, spaceAfter=4
-    )
-    style_formula_text = ParagraphStyle(
-        'FormulaText', fontSize=12, fontName='Helvetica-Oblique',
-        textColor=COLOR_ACCENT, alignment=TA_CENTER,
-        spaceAfter=6, spaceBefore=6,
-        backColor=COLOR_STEP_BG, borderPadding=8
-    )
-    style_footer = ParagraphStyle(
-        'Footer', fontSize=9, fontName='Helvetica',
-        textColor=colors.HexColor("#888888"), alignment=TA_CENTER
-    )
-
-    # ── Función para pie de página ──
-    def agregar_pie_pagina(canvas_obj, doc):
-        canvas_obj.saveState()
-        canvas_obj.setFont('Helvetica', 8)
-        canvas_obj.setFillColor(colors.HexColor("#888888"))
-        canvas_obj.drawCentredString(
-            A4[0] / 2, 1.5 * cm,
-            f"Generado por JARVIS 3.0 — {datetime.now().strftime('%d/%m/%Y %H:%M')} — Uso académico exclusivo"
-        )
-        canvas_obj.setStrokeColor(colors.HexColor("#dddddd"))
-        canvas_obj.line(2*cm, 1.8*cm, A4[0]-2*cm, 1.8*cm)
-        canvas_obj.restoreState()
-
-    # ── Construir documento ──
-    doc = SimpleDocTemplate(
-        path_pdf,
-        pagesize=A4,
-        rightMargin=2*cm, leftMargin=2*cm,
-        topMargin=2.5*cm, bottomMargin=2.5*cm
-    )
-
-    story = []
-
-    # ── PORTADA (cabecera con fondo oscuro simulado con tabla) ──
-    portada_data = [[
-        Paragraph(f"JARVIS 3.0", style_titulo_doc),
-    ], [
-        Paragraph(titulo, style_subtitulo_doc),
-    ], [
-        Paragraph(
-            f"{nombre}{' — ' + carrera if carrera else ''}{' | ' + universidad if universidad else ''}<br/>"
-            f"<font size='10'>{datetime.now().strftime('%d de %B de %Y')}</font>",
-            style_subtitulo_doc
-        ),
-    ]]
-    portada_tabla = Table(portada_data, colWidths=[doc.width])
-    portada_tabla.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), COLOR_PRIMARY),
-        ('ROWBACKGROUNDS', (0,0), (-1,-1), [COLOR_PRIMARY]),
-        ('TOPPADDING', (0,0), (-1,0), 20),
-        ('BOTTOMPADDING', (0,-1), (-1,-1), 20),
-        ('LEFTPADDING', (0,0), (-1,-1), 16),
-        ('RIGHTPADDING', (0,0), (-1,-1), 16),
-        ('ROUNDEDCORNERS', [6, 6, 6, 6]),
-    ]))
-    story.append(portada_tabla)
-    story.append(Spacer(1, 0.5*cm))
-
-    # ── PROCESAMIENTO DEL CONTENIDO ──
-    # Limpiar LaTeX del contenido
-    contenido_limpio = limpiar_latex(contenido)
-
-    # Detectar patrones de pasos (Paso 1:, 1., **Paso 1**, etc.)
-    patron_paso = re.compile(
-        r'^(?:\*\*)?(?:Paso\s+\d+|PASO\s+\d+|\d+\.)\s*[:\-]?\s*(?:\*\*)?(.*)$',
-        re.MULTILINE
-    )
-
-    # Detectar si hay resultado final
-    patron_resultado = re.compile(
-        r'(?:resultado|respuesta|answer|por lo tanto|entonces|∴|⇒)\s*[:=]\s*(.+)',
-        re.IGNORECASE
-    )
-
-    lineas = contenido_limpio.split('\n')
-    num_paso = 0
-    resultado_final = None
-    buffer_paso = []
-    en_paso = False
-
-    def flush_paso(num, encabezado, lineas_paso):
-        """Agrega un bloque de paso al story con diseño."""
-        items = []
-        items.append(Paragraph(f"Paso {num}: {encabezado}", style_step_header))
-
-        for lin in lineas_paso:
-            lin = lin.strip()
-            if not lin:
-                continue
-            # Detectar si la línea es una fórmula (tiene operadores matemáticos)
-            es_formula = bool(re.search(r'[=+\-×÷/√∫∑∏α-ωΑ-Ω²³°±≤≥≠≈]', lin)) and len(lin) < 120
-
-            if es_formula and len(lin) > 5:
-                items.append(Paragraph(f"<i>{lin}</i>", style_formula_text))
-            else:
-                items.append(Paragraph(lin, style_step_body))
-
-        # Envolver en tabla con fondo
-        paso_tabla = Table([[items]], colWidths=[doc.width - 1*cm])
-        paso_tabla.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,-1), COLOR_STEP_BG),
-            ('ROUNDEDCORNERS', [4, 4, 4, 4]),
-            ('TOPPADDING', (0,0), (-1,-1), 8),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-            ('LEFTPADDING', (0,0), (-1,-1), 12),
-            ('RIGHTPADDING', (0,0), (-1,-1), 12),
-        ]))
-        return paso_tabla
-
-    # Procesar líneas
-    bloques = []
-    i = 0
-    while i < len(lineas):
-        linea = lineas[i].strip()
-
-        # Detectar inicio de paso
-        m_paso = re.match(r'^(?:\*\*)?(?:Paso\s+(\d+)|PASO\s+(\d+)|(\d+)\.)\s*[:\-]?\s*(?:\*\*)?\s*(.*)', linea)
-        if m_paso:
-            # Guardar paso anterior si existe
-            if en_paso and buffer_paso:
-                bloques.append(('paso', num_paso, encabezado_paso, buffer_paso[:]))
-                buffer_paso = []
-
-            en_paso = True
-            num_paso += 1
-            encabezado_paso = m_paso.group(4).strip() or f"Parte {num_paso}"
-            encabezado_paso = encabezado_paso.replace('**', '')
-        elif en_paso:
-            # Verificar si es resultado final
-            m_res = patron_resultado.search(linea)
-            if m_res:
-                resultado_final = linea
-            elif linea:
-                buffer_paso.append(linea)
-        else:
-            # Contenido antes de los pasos
-            if linea:
-                bloques.append(('texto', linea))
-        i += 1
-
-    # Guardar último paso
-    if en_paso and buffer_paso:
-        bloques.append(('paso', num_paso, encabezado_paso, buffer_paso[:]))
-
-    # Si no se detectaron pasos, tratar todo como texto libre
-    if not any(b[0] == 'paso' for b in bloques):
-        parrafos = contenido_limpio.split('\n\n')
-        for p in parrafos:
-            p = p.strip()
-            if p:
-                bloques.append(('texto', p))
-
-    # Renderizar bloques al story
-    for bloque in bloques:
-        if bloque[0] == 'texto':
-            texto_bloque = bloque[1].replace('\n', '<br/>')
-            story.append(Paragraph(texto_bloque, style_body))
-            story.append(Spacer(1, 0.15*cm))
-        elif bloque[0] == 'paso':
-            _, num, encabezado, lineas_paso = bloque
-            paso_widget = flush_paso(num, encabezado, lineas_paso)
-            story.append(paso_widget)
-            story.append(Spacer(1, 0.2*cm))
-
-    # ── RESULTADO FINAL ──
-    if resultado_final:
-        story.append(Spacer(1, 0.3*cm))
-        resultado_data = [[
-            Paragraph("RESULTADO FINAL", style_resultado),
-        ], [
-            Paragraph(resultado_final.replace('**', ''), style_resultado),
-        ]]
-        resultado_tabla = Table(resultado_data, colWidths=[doc.width])
-        resultado_tabla.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,-1), COLOR_GOLD),
-            ('TOPPADDING', (0,0), (-1,-1), 12),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 12),
-            ('LEFTPADDING', (0,0), (-1,-1), 16),
-            ('RIGHTPADDING', (0,0), (-1,-1), 16),
-            ('ROUNDEDCORNERS', [6, 6, 6, 6]),
-        ]))
-        story.append(resultado_tabla)
-
-    # ── CONSTRUIR PDF ──
-    doc.build(story, onFirstPage=agregar_pie_pagina, onLaterPages=agregar_pie_pagina)
-    return path_pdf
-
-
 # ─────────────────────────────────────────────
-# GENERADOR DE EXCEL PROFESIONAL
+# PDF — usa agente_academico (arquitectura JSON)
+# ─────────────────────────────────────────────
+def _crear_pdf_limpio(contenido, user_id, titulo="Solución", perfil=None):
+    """Wrapper: pasa contenido al agente académico para generar PDF."""
+    from modulos.agente_academico import crear_pdf_desde_json, SYSTEM_JSON
+    import json as _json, re as _re
+    # Intentar parsear si ya es JSON
+    try:
+        txt = contenido.strip()
+        txt = _re.sub(r'^```json\s*|^```\s*|```$', '', txt, flags=_re.MULTILINE).strip()
+        datos = _json.loads(txt)
+        return crear_pdf_desde_json(datos, user_id, titulo, perfil)
+    except Exception:
+        # Si no es JSON, crear estructura básica con el texto
+        datos = {"ejercicios": [{"titulo": titulo, "datos": [], "pasos": [{"num": 1, "titulo": "Solución", "calculo": contenido[:2000]}], "resultado": ""}]}
+        return crear_pdf_desde_json(datos, user_id, titulo, perfil)
+
+
 # ─────────────────────────────────────────────
 def crear_excel(contenido_json, user_id, titulo="Datos"):
     """
@@ -2226,23 +1999,25 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
 
         # Decidir si generar PDF automático
         es_ejercicio    = intencion in ("ejercicio_dificil", "ejercicio_simple")
-        respuesta_larga = len(respuesta) > 800
-        tiene_pasos     = bool(re.search(r'paso\s+\d+|step\s+\d+|\d+\)', respuesta, re.IGNORECASE))
+        respuesta_larga = len(respuesta) > 600
+        tiene_pasos     = bool(re.search(r'paso\s+\d+|step\s+\d+|\d+\.', respuesta, re.IGNORECASE))
 
         if es_ejercicio and (respuesta_larga or tiene_pasos):
             await safe_delete(msg_espera)
-            # Solo PDF — sin texto por chat
             try:
+                from modulos.agente_academico import resolver_y_generar_pdf
                 titulo_pdf = f"Ejercicio — {datetime.now().strftime('%d/%m/%Y')}"
-                path_pdf   = _crear_pdf_limpio(respuesta, user_id, titulo_pdf, perfil)
+                path_pdf, _ = await loop.run_in_executor(
+                    None,
+                    lambda: resolver_y_generar_pdf(client, texto, user_id, titulo_pdf, perfil)
+                )
                 await update.message.reply_document(
                     document=open(path_pdf, "rb"),
                     filename="solucion_jarvis.pdf",
                     caption="📄 Aquí tienes tu solución completa"
                 )
             except Exception as e:
-                logger.error(f"Error generando PDF automático: {e}")
-                # Solo si falla el PDF, mandar texto plano
+                logger.error(f"Error generando PDF: {e}")
                 elementos      = procesar_output(respuesta)
                 respuesta_chat = elementos_a_texto_plano(elementos)
                 await update.message.reply_text(respuesta_chat[:8000])
@@ -2427,8 +2202,12 @@ async def manejar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if pide_pdf or respuesta_larga or tiene_pasos:
             try:
+                from modulos.agente_academico import resolver_y_generar_pdf
                 titulo_pdf = f"Ejercicio — {datetime.now().strftime('%d/%m/%Y')}"
-                path_pdf = _crear_pdf_limpio(solucion, user_id, titulo_pdf, perfil)
+                path_pdf, _ = await loop.run_in_executor(
+                    None,
+                    lambda: resolver_y_generar_pdf(client, solucion, user_id, titulo_pdf, perfil)
+                )
                 await update.message.reply_document(
                     document=open(path_pdf, "rb"),
                     filename="solucion_jarvis.pdf",
