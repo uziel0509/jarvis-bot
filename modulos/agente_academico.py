@@ -1,63 +1,40 @@
-"""
-modulos/agente_academico.py
-Jarvis 3.2 — Agente Academico
-
-Responsabilidades:
-- Resolver ejercicios de ingenieria (texto e imagen)
-- Generar PDFs 100% limpios — cero LaTeX crudo, formulas como PNG
-- Generar Excel, PowerPoint, Word academicos
-- Fallback automatico de modelos
-"""
-
-import os, re, io, json, logging, asyncio
+# ─────────────────────────────────────────────────────────────
+# AGENTE ACADÉMICO — JARVIS 3.2
+# PDF 100% ReportLab puro. Sin matplotlib. Sin PNG de fórmulas.
+# Fórmulas como texto Unicode limpio.
+# ─────────────────────────────────────────────────────────────
+import os, re, io
 from datetime import datetime
 from pathlib import Path
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
 from reportlab.lib import colors
 from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.units import cm
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table,
-    TableStyle, Image as RLImage
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+    HRFlowable
 )
-from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
-from modulos.pre_render import (
-    procesar_output, elementos_a_texto_plano,
-    TIPO_TEXTO, TIPO_FORMULA, TIPO_CODIGO,
-    TIPO_ESPACIO, TIPO_TITULO, TIPO_SUBTITULO
-)
-
-logger = logging.getLogger(__name__)
-
+# ── rutas ──
 ARCHIVOS_DIR = "/root/jarvis/archivos"
 Path(ARCHIVOS_DIR).mkdir(parents=True, exist_ok=True)
 
-# Modelos con orden de fallback
-MODELO_PESADO = os.getenv("MODELO_EJERCICIOS",        "openai/gpt-oss-120b")
-MODELO_MEDIO  = os.getenv("MODELO_EJERCICIOS_RAPIDO", "openai/gpt-oss-20b")
-MODELO_CHAT   = os.getenv("MODELO_CHAT",              "llama-3.3-70b-versatile")
-MODELO_VISION = os.getenv("MODELO_VISION",            "meta-llama/llama-4-scout-17b-16e-instruct")
-
-FALLBACK_PESADO = [MODELO_PESADO, MODELO_MEDIO, MODELO_CHAT]
-FALLBACK_MEDIO  = [MODELO_MEDIO,  MODELO_CHAT]
-
-# ─── Colores PDF ──────────────────────────────────────────────
-C_PRIMARY  = colors.HexColor("#1a1a2e")
-C_ACCENT   = colors.HexColor("#0f3460")
-C_GOLD     = colors.HexColor("#e94560")
-C_STEP_BG  = colors.HexColor("#eef2ff")
-C_CODE_BG  = colors.HexColor("#f4f4f4")
-C_WHITE    = colors.white
+# ── colores ──
+C_PRIMARY  = colors.HexColor("#1a1a2e")   # azul muy oscuro
+C_ACCENT   = colors.HexColor("#4361ee")   # azul eléctrico
+C_PASO_BG  = colors.HexColor("#eef2ff")   # azul muy claro para pasos
+C_RESULT   = colors.HexColor("#fff3cd")   # amarillo claro para resultado
+C_RESULT_B = colors.HexColor("#e67e00")   # naranja para borde resultado
+C_EJ_BG    = colors.HexColor("#dbeafe")   # celeste para cabecera ejercicio
+C_EJ_LINE  = colors.HexColor("#2563eb")   # azul para línea ejercicio
 C_GRAY     = colors.HexColor("#888888")
-C_SUBTITLE = colors.HexColor("#aaaacc")
+C_WHITE    = colors.white
+C_BLACK    = colors.black
 
-# ─── System prompt ────────────────────────────────────────────
+# ── system prompt para el modelo ──
 SYSTEM_ACADEMICO = """Eres el motor academico de JARVIS, tutor IA para ingenieria universitaria peruana.
 
 REGLAS DE FORMATO — OBLIGATORIAS SIN EXCEPCION:
@@ -68,562 +45,430 @@ REGLAS DE FORMATO — OBLIGATORIAS SIN EXCEPCION:
    SUBINDICES:  ₀ ₁ ₂ ₃ ₄ ₅ ₆ ₇ ₈ ₉ ₙ ₘ ₐ
    SUPERINDICES: ⁰ ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ⁻ ⁺ ⁿ
    EJEMPLOS CORRECTOS:
-   - H₂O (no H2O ni HnO)
-   - CO₂ (no CO2 ni COn)
-   - m⁻¹ (no m^-1 ni mn1)
-   - 10⁶ (no 10^6 ni 10n)
-   - C₈H₁₈ (no C8H18 ni CnHnn)
-   - Nₐ = 6.022×10²³ (no Na ni Nn)
-   - m³ (no m^3 ni mn3)
-   - mg·m⁻³ (no mg/m3 ni mg·mn3)
+   - H₂O  CO₂  C₈H₁₈  m⁻¹  10⁶  Nₐ  m³  mg·m⁻³
 
-3. Para fracciones usa la barra diagonal: (numerador / denominador)
-   Ejemplo: (8 × 28 / 114) no \\frac{8×28}{114}
+3. Para fracciones: (numerador / denominador)
 
-4. Para raices: √x o sqrt(x)
-   Ejemplo: √(x² + y²)
+4. Para raices: √x
 
-5. Para integrales: ∫f(x)dx de a hasta b
+5. Operadores: × · ÷ ± ≤ ≥ ≠ ≈ ∑ ∏ ∞ √ ∫ ∂ Δ
 
-6. Operadores matematicos disponibles: × · ÷ ± ≤ ≥ ≠ ≈ ∑ ∏ ∞ √ ∫ ∂ Δ
+6. Pasos numerados: "Paso 1: [titulo]"
 
-7. Pasos numerados: "Paso 1: [titulo del paso]"
+7. Resultado final: "RESULTADO: [valor con unidades]"
 
-8. Resultado final: "RESULTADO: [valor con unidades correctas]"
+8. Para MULTIPLES ejercicios:
+   - Cada ejercicio inicia con: ## Ejercicio N: [titulo]
+   - Los pasos de CADA ejercicio empiezan desde Paso 1
+   - NUNCA continúes la numeración entre ejercicios
 
-9. Explica el razonamiento en cada paso, no solo el calculo.
-
-10. Para MULTIPLES ejercicios:
-    - Cada ejercicio inicia con: ## Ejercicio N: [titulo descriptivo]
-    - Los pasos de CADA ejercicio empiezan desde Paso 1 (NUNCA continuos)
-    - Ejercicio 17: Paso 1, Paso 2, Paso 3. RESULTADO. 
-    - Ejercicio 18: Paso 1, Paso 2. RESULTADO. (no Paso 4, Paso 5)
-
-11. Para UN solo ejercicio inicia con: ## [titulo descriptivo]
-
-MATERIAS: Calculo, algebra lineal, fisica, estatica, dinamica, resistencia de materiales,
-termodinamica, hidraulica, circuitos, estadistica, quimica y todas las de ingenieria."""
-
-SYSTEM_VISION_DESCRIPCION = """Analiza esta imagen de ejercicio academico.
-Describe con precision:
-1. Tipo de ejercicio (materia y tema)
-2. Datos dados (valores, unidades, condiciones)
-3. Lo que se pide calcular
-4. Diagramas o figuras presentes
-5. Texto manuscrito (transcribelo exactamente)
-No resuelvas aun, solo describe."""
-
-SYSTEM_VISION_RESOLVER = """Con el analisis de la imagen, resuelve el ejercicio.
-OBLIGATORIO: Sin LaTeX. Texto plano. Pasos numerados. RESULTADO al final."""
+9. Para UN solo ejercicio: ## [titulo descriptivo]"""
 
 
-# ═══════════════════════════════════════════════════════════════
-# LLAMADA IA CON FALLBACK
-# ═══════════════════════════════════════════════════════════════
-def _llamar_fallback(client, mensajes, modelos, max_tokens=4000):
-    ultimo_error = None
-    for modelo in modelos:
-        try:
-            resp = client.chat.completions.create(
-                model=modelo, messages=mensajes, max_tokens=max_tokens
-            )
-            logger.info(f"[academico] Modelo usado: {modelo}")
-            return resp.choices[0].message.content, modelo
-        except Exception as e:
-            logger.warning(f"[academico] {modelo} fallo: {e}")
-            ultimo_error = e
-    raise RuntimeError(f"Todos los modelos fallaron: {ultimo_error}")
+# ─────────────────────────────────────────────
+# POST-PROCESADOR UNICODE
+# ─────────────────────────────────────────────
+def _fix_unicode(texto: str) -> str:
+    """Corrige automáticamente notación 'n' que usa el modelo."""
+    # Superíndices negativos: moln1 → mol⁻¹
+    for d, r in [('1','⁻¹'),('2','⁻²'),('3','⁻³')]:
+        texto = re.sub(rf'([a-zA-Zμ·L])n{d}\b', lambda m,r=r: m.group(1)+r, texto)
 
+    # Potencias: 10n6 → 10⁶, 10n-3 → 10⁻³
+    sup = {'0':'⁰','1':'¹','2':'²','3':'³','4':'⁴',
+           '5':'⁵','6':'⁶','7':'⁷','8':'⁸','9':'⁹','-':'⁻'}
+    def pot(m):
+        return m.group(1) + ''.join(sup.get(c,c) for c in m.group(2))
+    texto = re.sub(r'(10)n(-?\d+)', pot, texto)
 
-# ═══════════════════════════════════════════════════════════════
-# RESOLVER EJERCICIO (texto)
-# ═══════════════════════════════════════════════════════════════
-async def resolver_ejercicio(client, texto, perfil, historial, dificil=False):
-    """Retorna (respuesta_texto, modelo_usado)."""
-    loop = asyncio.get_event_loop()
-    system = SYSTEM_ACADEMICO
-    n = perfil.get("nombre", "")
-    c = perfil.get("carrera", "")
-    ci = perfil.get("ciclo", "")
-    if n or c:
-        system += f"\n\nALUMNO: {n} | {c} | Ciclo {ci}"
-
-    msgs = [{"role": "system", "content": system}]
-    for msg in historial[-6:]:
-        msgs.append(msg)
-    msgs.append({"role": "user", "content": texto})
-
-    modelos = FALLBACK_PESADO if dificil else FALLBACK_MEDIO
-    return await loop.run_in_executor(None, lambda: _llamar_fallback(client, msgs, modelos))
-
-
-# ═══════════════════════════════════════════════════════════════
-# ANALIZAR IMAGEN DE EJERCICIO
-# ═══════════════════════════════════════════════════════════════
-async def analizar_imagen_ejercicio(client, img_bytes, caption, perfil):
-    """
-    Pipeline 2 pasos: vision describe → modelo pesado resuelve.
-    Retorna (descripcion, solucion, modelo_usado).
-    """
-    import base64
-    loop    = asyncio.get_event_loop()
-    img_b64 = base64.b64encode(img_bytes).decode()
-
-    def paso1():
-        instruccion = caption if caption else SYSTEM_VISION_DESCRIPCION
-        return client.chat.completions.create(
-            model=MODELO_VISION,
-            messages=[{"role": "user", "content": [
-                {"type": "image_url",
-                 "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                {"type": "text", "text": instruccion}
-            ]}],
-            max_tokens=1500
-        )
-
-    resp1       = await loop.run_in_executor(None, paso1)
-    descripcion = resp1.choices[0].message.content
-
-    n = perfil.get("nombre", "")
-    c = perfil.get("carrera", "")
-    system = SYSTEM_ACADEMICO + (f"\n\nALUMNO: {n} | {c}" if n or c else "")
-
-    msgs2 = [
-        {"role": "system",    "content": system},
-        {"role": "user",      "content": f"Analice esta imagen:\n\n{descripcion}"},
-        {"role": "assistant", "content": "Entendido. Resolviendo paso a paso."},
-        {"role": "user",      "content": SYSTEM_VISION_RESOLVER}
+    # Fórmulas químicas comunes
+    reemplazos = [
+        (r'\bCnHnn\b','C₈H₁₈'),(r'\bC8H18\b','C₈H₁₈'),
+        (r'\bCnHnnOn\b','C₆H₁₂O₆'),(r'\bC6H12O6\b','C₆H₁₂O₆'),
+        (r'\bCnHnOH\b','C₂H₅OH'),(r'\bC2H5OH\b','C₂H₅OH'),
+        (r'\bHnO\b','H₂O'),(r'\bH2O\b','H₂O'),
+        (r'\bCOn\b','CO₂'),(r'\bCO2\b','CO₂'),
+        (r'\bO2\b','O₂'),(r'\bN2\b','N₂'),
+        (r'\bNn\b','Nₐ'),(r'\bNA\b','Nₐ'),
+        (r'\bm3\b','m³'),(r'\bcm3\b','cm³'),(r'\bdm3\b','dm³'),
+        (r'\bm2\b','m²'),(r'\bkm2\b','km²'),
     ]
-    solucion, modelo = await loop.run_in_executor(
-        None, lambda: _llamar_fallback(client, msgs2, FALLBACK_PESADO)
-    )
-    return descripcion, solucion, modelo
+    for pat, rep in reemplazos:
+        texto = re.sub(pat, rep, texto)
+    return texto
 
 
-# ═══════════════════════════════════════════════════════════════
-# ESTILOS PDF
-# ═══════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────
+# ESTILOS
+# ─────────────────────────────────────────────
 def _estilos():
     return {
         "titulo_doc": ParagraphStyle(
-            'TituloDoc', fontSize=20, fontName='Helvetica-Bold',
-            textColor=C_WHITE, alignment=TA_CENTER, spaceAfter=6),
+            "titulo_doc", fontName="Helvetica-Bold",
+            fontSize=22, textColor=C_WHITE, spaceAfter=4, leading=28
+        ),
         "sub_doc": ParagraphStyle(
-            'SubDoc', fontSize=12, fontName='Helvetica',
-            textColor=C_SUBTITLE, alignment=TA_CENTER, spaceAfter=4),
-        "body": ParagraphStyle(
-            'Body', fontSize=11, fontName='Helvetica',
-            textColor=C_PRIMARY, alignment=TA_JUSTIFY,
-            spaceAfter=8, leading=16),
-        "titulo_sec": ParagraphStyle(
-            'TituloSec', fontSize=14, fontName='Helvetica-Bold',
-            textColor=C_ACCENT, spaceBefore=14, spaceAfter=6),
-        "sub_sec": ParagraphStyle(
-            'SubSec', fontSize=12, fontName='Helvetica-Bold',
-            textColor=C_ACCENT, spaceBefore=10, spaceAfter=4),
-        "paso_header": ParagraphStyle(
-            'PasoHeader', fontSize=12, fontName='Helvetica-Bold',
-            textColor=C_ACCENT, spaceAfter=4, spaceBefore=6),
-        "paso_body": ParagraphStyle(
-            'PasoBody', fontSize=11, fontName='Helvetica',
-            textColor=C_PRIMARY, leftIndent=10, leading=16),
-        "codigo": ParagraphStyle(
-            'Codigo', fontSize=10, fontName='Courier',
-            textColor=C_PRIMARY, leftIndent=8, leading=14),
+            "sub_doc", fontName="Helvetica",
+            fontSize=11, textColor=colors.HexColor("#ccccff"), leading=16
+        ),
+        "titulo_ej": ParagraphStyle(
+            "titulo_ej", fontName="Helvetica-Bold",
+            fontSize=13, textColor=C_EJ_LINE, spaceAfter=2, leading=18
+        ),
+        "cuerpo": ParagraphStyle(
+            "cuerpo", fontName="Helvetica",
+            fontSize=10, textColor=C_BLACK, leading=15, spaceAfter=2
+        ),
+        "paso_titulo": ParagraphStyle(
+            "paso_titulo", fontName="Helvetica-Bold",
+            fontSize=10, textColor=C_ACCENT, leading=14
+        ),
+        "paso_cuerpo": ParagraphStyle(
+            "paso_cuerpo", fontName="Helvetica",
+            fontSize=10, textColor=C_BLACK, leading=14
+        ),
         "resultado": ParagraphStyle(
-            'Resultado', fontSize=13, fontName='Helvetica-Bold',
-            textColor=C_WHITE, alignment=TA_CENTER, spaceAfter=4),
+            "resultado", fontName="Helvetica-Bold",
+            fontSize=11, textColor=C_RESULT_B, leading=16
+        ),
+        "codigo": ParagraphStyle(
+            "codigo", fontName="Courier",
+            fontSize=9, textColor=colors.HexColor("#1a1a1a"),
+            leading=13, leftIndent=8
+        ),
+        "pie": ParagraphStyle(
+            "pie", fontName="Helvetica",
+            fontSize=8, textColor=C_GRAY
+        ),
     }
 
 
-def _escapar(texto):
-    """Escapar caracteres especiales de ReportLab."""
-    return (texto.replace('&', '&amp;')
-                 .replace('<', '&lt;')
-                 .replace('>', '&gt;')
-                 .replace('**', ''))
+# ─────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────
+def _esc(texto: str) -> str:
+    """Escapa caracteres especiales para ReportLab Paragraph."""
+    return (texto
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 
-# ═══════════════════════════════════════════════════════════════
-# CREAR PDF ACADEMICO — GARANTIA CERO LATEX CRUDO
-# ═══════════════════════════════════════════════════════════════
+def _bloque_paso(numero, titulo, lineas_cuerpo, W, estilos):
+    """Devuelve un Table con el bloque visual de un paso."""
+    contenido = []
+    if titulo:
+        contenido.append(
+            Paragraph(f"Paso {numero}: {_esc(titulo)}", estilos["paso_titulo"])
+        )
+    for l in lineas_cuerpo:
+        if l.strip():
+            contenido.append(
+                Paragraph(_esc(l.strip()), estilos["paso_cuerpo"])
+            )
+    if not contenido:
+        return None
+    t = Table([[contenido]], colWidths=[W - 0.4*cm])
+    t.setStyle(TableStyle([
+        ('BACKGROUND',    (0,0), (-1,-1), C_PASO_BG),
+        ('LEFTPADDING',   (0,0), (-1,-1), 12),
+        ('RIGHTPADDING',  (0,0), (-1,-1), 8),
+        ('TOPPADDING',    (0,0), (-1,-1), 7),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 7),
+        ('LINERIGHT',     (0,0), (0,-1),  3, C_ACCENT),
+        ('ROWBACKGROUNDS',(0,0), (-1,-1), [C_PASO_BG]),
+    ]))
+    return t
+
+
+def _bloque_resultado(texto, W, estilos):
+    """Devuelve un Table con el bloque visual del resultado."""
+    t = Table(
+        [[Paragraph(f"✓  {_esc(texto)}", estilos["resultado"])]],
+        colWidths=[W - 0.4*cm]
+    )
+    t.setStyle(TableStyle([
+        ('BACKGROUND',    (0,0), (-1,-1), C_RESULT),
+        ('LINEBELOW',     (0,0), (-1,-1), 2, C_RESULT_B),
+        ('LINETOP',       (0,0), (-1,-1), 2, C_RESULT_B),
+        ('LEFTPADDING',   (0,0), (-1,-1), 14),
+        ('TOPPADDING',    (0,0), (-1,-1), 8),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+    ]))
+    return t
+
+
+def _bloque_ejercicio(titulo, W, estilos):
+    """Cabecera visual para cada ejercicio."""
+    t = Table(
+        [[Paragraph(f"📌  {_esc(titulo)}", estilos["titulo_ej"])]],
+        colWidths=[W]
+    )
+    t.setStyle(TableStyle([
+        ('BACKGROUND',    (0,0), (-1,-1), C_EJ_BG),
+        ('LINEBELOW',     (0,0), (-1,-1), 2.5, C_EJ_LINE),
+        ('LEFTPADDING',   (0,0), (-1,-1), 14),
+        ('TOPPADDING',    (0,0), (-1,-1), 9),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 9),
+    ]))
+    return t
+
 
 # ─────────────────────────────────────────────
-# POST-PROCESADOR UNICODE — corrige lo que el modelo no respeta
+# PARSER DE CONTENIDO
 # ─────────────────────────────────────────────
-import re as _re
+RE_EJ     = re.compile(r'^#{1,2}\s*(Ejercicio\s+\d+.*|Problema\s+\d+.*)', re.IGNORECASE)
+RE_TITULO = re.compile(r'^#{1,2}\s+(.+)$')
+RE_PASO   = re.compile(r'^(?:\*\*)?(?:Paso\s+(\d+)|(\d+)\.)\s*[:\-]?\s*(?:\*\*)?\s*(.*)', re.IGNORECASE)
+RE_RESULT = re.compile(r'^(?:\*\*)?(?:RESULTADO|Respuesta|RESPUESTA)\s*[:\-]\s*(?:\*\*)?\s*(.*)', re.IGNORECASE)
+RE_BULLET = re.compile(r'^[-•*]\s+(.+)')
+RE_BOLD   = re.compile(r'\*\*(.+?)\*\*')
 
-def _fix_unicode_notacion(texto: str) -> str:
+
+def _limpiar_markdown(txt):
+    """Quita ** del texto para ReportLab."""
+    return RE_BOLD.sub(r'<b>\1</b>', txt)
+
+
+# ─────────────────────────────────────────────
+# FUNCIÓN PRINCIPAL
+# ─────────────────────────────────────────────
+def crear_pdf_academico(contenido, user_id, titulo="Solución", perfil=None):
     """
-    Convierte notación con 'n' que usa el modelo en caracteres Unicode reales.
-    Ejemplo: moln1 → mol⁻¹, 10n6 → 10⁶, mn3 → m³, HnO → H₂O
+    Genera PDF profesional 100% ReportLab.
+    Sin matplotlib. Sin PNG. Solo texto Unicode limpio.
     """
-    # Superíndices negativos: mn1 → m⁻¹, moln1 → mol⁻¹, sn1 → s⁻¹
-    sup_neg = {'1': '⁻¹', '2': '⁻²', '3': '⁻³'}
-    for d, r in sup_neg.items():
-        texto = _re.sub(rf'([a-zA-Zμ·])n{d}\b', lambda m: m.group(1) + r, texto)
-
-    # Superíndices positivos en potencias: 10n6 → 10⁶, 10n3 → 10³
-    sup_map = {'0':'⁰','1':'¹','2':'²','3':'³','4':'⁴','5':'⁵',
-               '6':'⁶','7':'⁷','8':'⁸','9':'⁹'}
-    def fix_potencia(m):
-        base, exp = m.group(1), m.group(2)
-        exp_uni = ''.join(sup_map.get(c, c) for c in exp)
-        return base + exp_uni
-    # 10n6, 10n-3, 10n-6
-    texto = _re.sub(r'(10)n(-?\d+)', fix_potencia, texto)
-    texto = _re.sub(r'(\d+)n(\d)', fix_potencia, texto)
-
-    # Subíndices en fórmulas químicas conocidas
-    quimicos = [
-        (r'\bC8H18\b', 'C₈H₁₈'), (r'\bC8H1[Ee]\b', 'C₈H₁₈'),
-        (r'\bCnHnn\b', 'C₈H₁₈'),  # octano abreviado con n
-        (r'\bCO2\b', 'CO₂'),       (r'\bH2O\b', 'H₂O'),
-        (r'\bO2\b', 'O₂'),         (r'\bN2\b', 'N₂'),
-        (r'\bNH3\b', 'NH₃'),       (r'\bH2SO4\b', 'H₂SO₄'),
-        (r'\bHCl\b', 'HCl'),       (r'\bNaCl\b', 'NaCl'),
-        (r'\bCO2\b', 'CO₂'),       (r'\bCH4\b', 'CH₄'),
-        (r'\bC6H12O6\b', 'C₆H₁₂O₆'),
-        (r'\bC2H5OH\b', 'C₂H₅OH'), (r'\bCnHnOH\b', 'C₂H₅OH'),
-        (r'\bCnHnnOn\b', 'C₆H₁₂O₆'),
-        (r'\bHnO\b', 'H₂O'),       (r'\bCOn\b', 'CO₂'),
-    ]
-    for pat, rep in quimicos:
-        texto = _re.sub(pat, rep, texto)
-
-    # m³, cm³, dm³
-    texto = _re.sub(r'\bm3\b', 'm³', texto)
-    texto = _re.sub(r'\bcm3\b', 'cm³', texto)
-    texto = _re.sub(r'\bdm3\b', 'dm³', texto)
-    texto = _re.sub(r'\bkm2\b', 'km²', texto)
-    texto = _re.sub(r'\bm2\b', 'm²', texto)
-
-    # Nₐ (número de Avogadro)
-    texto = _re.sub(r'\bNn\b', 'Nₐ', texto)
-    texto = _re.sub(r'\bNA\b', 'Nₐ', texto)
-
-    return texto
-
-def crear_pdf_academico(contenido, user_id, titulo="Solucion de Ejercicio", perfil=None):
-    """
-    Genera PDF profesional con cero LaTeX crudo.
-
-    TODO el contenido pasa por procesar_output() de pre_render:
-      - Formulas LaTeX → imagen PNG (matplotlib)
-      - Codigo → recuadro limpio
-      - Pasos numerados → bloques con fondo
-
-    Retorna ruta del PDF generado.
-    """
-    perfil = perfil or {}
-    # Post-procesar el contenido para corregir notación Unicode
-    contenido = _fix_unicode_notacion(contenido)
-    nombre = perfil.get("nombre", "Alumno")
+    perfil  = perfil or {}
+    nombre  = perfil.get("nombre", "Alumno")
     carrera = perfil.get("carrera", "")
     uni     = perfil.get("universidad", "")
-
+    fecha   = datetime.now().strftime("%-d de %B de %Y")
     ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
     path    = f"{ARCHIVOS_DIR}/solucion_{user_id}_{ts}.pdf"
-    estilo  = _estilos()
+
+    # Post-procesar
+    contenido = _fix_unicode(contenido)
+
+    estilos = _estilos()
 
     doc = SimpleDocTemplate(
         path, pagesize=A4,
         rightMargin=2*cm, leftMargin=2*cm,
         topMargin=2.5*cm, bottomMargin=2.5*cm
     )
-    W = doc.width  # ancho util
+    W = doc.width
 
     story = []
 
-    # ── Pie de pagina ──
+    # ── pie de página ──
     def pie(canvas, doc_):
         canvas.saveState()
-        canvas.setFont('Helvetica', 8)
+        canvas.setFont("Helvetica", 8)
         canvas.setFillColor(C_GRAY)
-        canvas.drawCentredString(
-            A4[0]/2, 1.5*cm,
-            f"JARVIS 3.2 — {datetime.now().strftime('%d/%m/%Y %H:%M')} — Uso academico"
-        )
-        canvas.setStrokeColor(colors.HexColor("#dddddd"))
-        canvas.line(2*cm, 1.8*cm, A4[0]-2*cm, 1.8*cm)
+        canvas.drawCentredString(A4[0]/2, 1.2*cm, f"JARVIS 3.2  ·  Página {doc_.page}")
         canvas.restoreState()
 
-    # ── Portada ──
-    info = nombre + (f" — {carrera}" if carrera else "") + (f" | {uni}" if uni else "")
-    fecha = datetime.now().strftime("%d de %B de %Y")
+    # ── portada ──
+    info = nombre
+    if carrera: info += f"  —  {carrera}"
+    if uni:     info += f"  |  {uni}"
 
-    # Portada limpia — barra de color acento (no negro completo)
     portada = Table([
-        [Paragraph("📘 JARVIS 3.2", estilo["titulo_doc"])],
-        [Paragraph(_escapar(titulo), estilo["sub_doc"])],
-        [Paragraph(
-            f"{_escapar(info)}<br/><font size='10' color='#aaaacc'>{fecha}</font>",
-            estilo["sub_doc"]
-        )],
+        [Paragraph("JARVIS 3.2", estilos["titulo_doc"])],
+        [Paragraph(_esc(titulo),  estilos["sub_doc"])],
+        [Paragraph(f"{_esc(info)}<br/><font size='9' color='#aaaacc'>{fecha}</font>",
+                   estilos["sub_doc"])],
     ], colWidths=[W])
     portada.setStyle(TableStyle([
-        ('BACKGROUND',    (0,0), (-1, 0), C_PRIMARY),   # Solo fila titulo oscura
-        ('BACKGROUND',    (0,1), (-1,-1), C_ACCENT),    # Resto azul acento
-        ('TOPPADDING',    (0,0), (-1, 0), 18),
-        ('BOTTOMPADDING', (0,-1),(-1,-1), 18),
-        ('LEFTPADDING',   (0,0), (-1,-1), 20),
-        ('RIGHTPADDING',  (0,0), (-1,-1), 20),
+        ('BACKGROUND',    (0,0), (0,0),  C_PRIMARY),
+        ('BACKGROUND',    (0,1), (-1,-1), colors.HexColor("#2d3561")),
+        ('TOPPADDING',    (0,0), (0,0),  18),
+        ('BOTTOMPADDING', (0,-1),(-1,-1),16),
+        ('LEFTPADDING',   (0,0), (-1,-1),20),
+        ('RIGHTPADDING',  (0,0), (-1,-1),12),
     ]))
     story.append(portada)
-    story.append(Spacer(1, 0.5*cm))
+    story.append(Spacer(1, 0.6*cm))
 
-    # ══════════════════════════════════════════════════════════
-    # NUCLEO: procesar_output garantiza cero LaTeX crudo
-    # ══════════════════════════════════════════════════════════
-    elementos  = procesar_output(contenido)
-    RE_PASO    = re.compile(r'^(?:Paso\s+(\d+)|(\d+)\.)\s*[:\-]?\s*(.*)', re.IGNORECASE)
-    RE_RESULT  = re.compile(r'^RESULTADO\s*[:\-]\s*(.*)', re.IGNORECASE)
-    RE_EJERCICIO = re.compile(r'^#{1,2}\s*(?:Ejercicio\s+\d+|Problema\s+\d+)[:\s]*(.*)', re.IGNORECASE)
-
-    resultado_final = None
+    # ── parsear contenido ──
+    lineas = contenido.split('\n')
     i = 0
-    num_paso = 0
+    num_paso  = 0
+    en_paso   = False
+    paso_tit  = ""
+    paso_body = []
+    buffer    = []   # texto libre acumulado
 
-    while i < len(elementos):
-        el   = elementos[i]
-        tipo = el["tipo"]
+    def flush_buffer():
+        for bl in buffer:
+            if bl.strip():
+                story.append(Paragraph(_esc(_limpiar_markdown(bl)), estilos["cuerpo"]))
+        buffer.clear()
 
-        if tipo == TIPO_TITULO:
-            story.append(Spacer(1, 0.3*cm))
-            # Cabecera de ejercicio con fondo destacado
-            t_ej = Table([[Paragraph(
-                f"📌 {_escapar(el['contenido'])}", estilo["titulo_sec"]
-            )]], colWidths=[W])
-            t_ej.setStyle(TableStyle([
-                ('BACKGROUND',    (0,0), (-1,-1), colors.HexColor("#e8eeff")),
-                ('LEFTPADDING',   (0,0), (-1,-1), 14),
-                ('TOPPADDING',    (0,0), (-1,-1), 8),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-                ('LINEBELOW',     (0,0), (-1,-1), 2, C_ACCENT),
-            ]))
-            story.append(t_ej)
-            story.append(Spacer(1, 0.2*cm))
-            num_paso = 0  # resetear pasos por ejercicio
-
-        elif tipo == TIPO_SUBTITULO:
-            contenido_sub = el["contenido"]
-            # Si es encabezado de ejercicio — destacarlo y resetear pasos
-            es_ej = bool(_re.match(
-                r'^(Ejercicio|Problema|Ej\.?)\s*\d+', contenido_sub, _re.IGNORECASE
-            ))
-            if es_ej:
-                story.append(Spacer(1, 0.35*cm))
-                t_ej = Table([[Paragraph(
-                    f"📌 {_escapar(contenido_sub)}", estilo["titulo_sec"]
-                )]], colWidths=[W])
-                t_ej.setStyle(TableStyle([
-                    ('BACKGROUND',    (0,0), (-1,-1), colors.HexColor("#e8eeff")),
-                    ('LEFTPADDING',   (0,0), (-1,-1), 14),
-                    ('TOPPADDING',    (0,0), (-1,-1), 8),
-                    ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-                    ('LINEBELOW',     (0,0), (-1,-1), 2, C_ACCENT),
-                ]))
-                story.append(t_ej)
+    def flush_paso():
+        nonlocal en_paso, paso_tit, paso_body, num_paso
+        if en_paso:
+            blq = _bloque_paso(num_paso, paso_tit, paso_body, W, estilos)
+            if blq:
                 story.append(Spacer(1, 0.15*cm))
-                num_paso = 0  # resetear pasos por ejercicio
-            else:
-                story.append(Spacer(1, 0.1*cm))
-                story.append(Paragraph(_escapar(contenido_sub), estilo["sub_sec"]))
+                story.append(blq)
+            en_paso   = False
+            paso_tit  = ""
+            paso_body = []
 
-        elif tipo == TIPO_ESPACIO:
+    while i < len(lineas):
+        linea = lineas[i].rstrip()
+
+        # ── ejercicio (## Ejercicio N) ──
+        m = RE_EJ.match(linea.strip())
+        if m:
+            flush_buffer()
+            flush_paso()
+            num_paso = 0   # resetear pasos
+            story.append(Spacer(1, 0.4*cm))
+            story.append(_bloque_ejercicio(m.group(1).strip(), W, estilos))
             story.append(Spacer(1, 0.2*cm))
+            i += 1
+            continue
 
-        # Formulas → imagen PNG (cero LaTeX en el PDF)
-        elif tipo == TIPO_FORMULA:
-            png = el["contenido"]
-            if png:
-                buf = io.BytesIO(png)
-                img = RLImage(buf)
-                inline = el.get("inline", False)
-                max_w  = W * (0.45 if inline else 0.85)
-                if img.drawWidth > max_w:
-                    ratio = max_w / img.drawWidth
-                    img.drawWidth  = max_w
-                    img.drawHeight = img.drawHeight * ratio
-                t = Table([[img]], colWidths=[W])
-                t.setStyle(TableStyle([
-                    ('ALIGN',         (0,0), (-1,-1), 'CENTER'),
-                    ('BACKGROUND',    (0,0), (-1,-1), C_STEP_BG),
-                    ('TOPPADDING',    (0,0), (-1,-1), 8),
-                    ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-                ]))
-                story.append(t)
-                story.append(Spacer(1, 0.1*cm))
-            else:
-                # No se pudo renderizar — mostrar texto limpio del formula_tex
-                tex = el.get("formula_tex", "formula")
-                story.append(Paragraph(f"[Formula: {_escapar(tex[:80])}]",
-                                       estilo["paso_body"]))
+        # ── título genérico (## Texto) ──
+        m = RE_TITULO.match(linea.strip())
+        if m:
+            flush_buffer()
+            flush_paso()
+            story.append(Spacer(1, 0.25*cm))
+            story.append(Paragraph(
+                f"<b>{_esc(m.group(1))}</b>", estilos["cuerpo"]
+            ))
+            story.append(Spacer(1, 0.1*cm))
+            i += 1
+            continue
 
-        # Bloques de codigo → recuadro limpio sin backticks
-        elif tipo == TIPO_CODIGO:
-            codigo = el["contenido"]
-            lang   = el.get("lenguaje", "")
-            items  = []
-            if lang:
-                items.append(Paragraph(
-                    f"<b>{lang.upper()}</b>",
-                    ParagraphStyle('Lang', fontSize=9, fontName='Helvetica-Bold',
-                                   textColor=C_GRAY)
-                ))
-            for lc in codigo.split('\n'):
-                lc_safe = _escapar(lc) or " "
-                items.append(Paragraph(lc_safe, estilo["codigo"]))
-            t = Table([items], colWidths=[W])
-            t.setStyle(TableStyle([
-                ('BACKGROUND',    (0,0), (-1,-1), C_CODE_BG),
-                ('TOPPADDING',    (0,0), (-1,-1), 10),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 10),
-                ('LEFTPADDING',   (0,0), (-1,-1), 14),
-                ('RIGHTPADDING',  (0,0), (-1,-1), 14),
-            ]))
-            story.append(t)
+        # ── RESULTADO ──
+        m = RE_RESULT.match(linea.strip())
+        if m:
+            flush_buffer()
+            flush_paso()
+            txt = m.group(1).strip() or ""
+            # recoger líneas siguientes que sean parte del resultado
+            j = i + 1
+            while j < len(lineas) and lineas[j].strip() and not RE_PASO.match(lineas[j]):
+                txt += " " + lineas[j].strip()
+                j += 1
             story.append(Spacer(1, 0.2*cm))
+            story.append(_bloque_resultado(txt, W, estilos))
+            story.append(Spacer(1, 0.2*cm))
+            i = j
+            continue
 
-        elif tipo == TIPO_TEXTO:
-            texto = el["contenido"]
-
-            # ¿Es resultado final?
-            m = RE_RESULT.match(texto.strip())
-            if m:
-                resultado_final = m.group(1).strip()
+        # ── Paso N ──
+        m = RE_PASO.match(linea.strip())
+        if m:
+            flush_buffer()
+            flush_paso()
+            num_paso += 1
+            en_paso  = True
+            paso_tit = (m.group(3) or "").strip()
+            paso_body = []
+            i += 1
+            # recoger cuerpo del paso
+            while i < len(lineas):
+                sig = lineas[i].rstrip()
+                if not sig.strip():
+                    i += 1
+                    break
+                if RE_PASO.match(sig.strip()) or RE_RESULT.match(sig.strip()) or RE_EJ.match(sig.strip()):
+                    break
+                paso_body.append(sig)
                 i += 1
-                continue
+            continue
 
-            # ¿Es un paso numerado?
-            m = RE_PASO.match(texto.strip())
-            if m:
-                num_paso += 1
-                encabezado = (m.group(3) or f"Parte {num_paso}").replace('**','').strip()
+        # ── bullets ──
+        m = RE_BULLET.match(linea.strip())
+        if m:
+            flush_paso()
+            buffer.append(f"• {m.group(1)}")
+            i += 1
+            continue
 
-                items_paso = [
-                    Paragraph(f"Paso {num_paso}: {_escapar(encabezado)}",
-                               estilo["paso_header"])
-                ]
+        # ── línea vacía ──
+        if not linea.strip():
+            flush_paso()
+            if buffer:
+                flush_buffer()
+                story.append(Spacer(1, 0.1*cm))
+            i += 1
+            continue
 
-                # Consumir elementos siguientes del mismo paso
-                j = i + 1
-                while j < len(elementos):
-                    sig = elementos[j]
-                    # Parar si es otro paso, resultado, titulo o subtitulo
-                    if sig["tipo"] == TIPO_TEXTO:
-                        if RE_PASO.match(sig["contenido"].strip()) or \
-                           RE_RESULT.match(sig["contenido"].strip()):
-                            break
-                    if sig["tipo"] in (TIPO_TITULO, TIPO_SUBTITULO):
-                        break
-
-                    if sig["tipo"] == TIPO_FORMULA:
-                        png = sig["contenido"]
-                        if png:
-                            buf = io.BytesIO(png)
-                            img = RLImage(buf)
-                            max_w2 = W * 0.75
-                            if img.drawWidth > max_w2:
-                                ratio = max_w2 / img.drawWidth
-                                img.drawWidth  = max_w2
-                                img.drawHeight = img.drawHeight * ratio
-                            items_paso.append(img)
-                    elif sig["tipo"] == TIPO_TEXTO:
-                        items_paso.append(
-                            Paragraph(_escapar(sig["contenido"]), estilo["paso_body"])
-                        )
-                    elif sig["tipo"] == TIPO_ESPACIO:
-                        items_paso.append(Spacer(1, 0.1*cm))
-                    j += 1
-
-                i = j  # saltar lo procesado
-
-                t = Table([items_paso], colWidths=[W - cm])
-                t.setStyle(TableStyle([
-                    ('BACKGROUND',    (0,0), (-1,-1), C_STEP_BG),
-                    ('TOPPADDING',    (0,0), (-1,-1), 8),
-                    ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-                    ('LEFTPADDING',   (0,0), (-1,-1), 12),
-                    ('RIGHTPADDING',  (0,0), (-1,-1), 12),
-                ]))
-                story.append(t)
-                story.append(Spacer(1, 0.2*cm))
-                continue
-
-            else:
-                story.append(Paragraph(_escapar(texto), estilo["body"]))
-
+        # ── texto libre ──
+        if en_paso:
+            paso_body.append(linea)
+        else:
+            buffer.append(linea)
         i += 1
 
-    # ── Resultado final ──
-    if resultado_final:
-        story.append(Spacer(1, 0.4*cm))
-        r_safe = _escapar(resultado_final)
-        t = Table([
-            [Paragraph("RESULTADO FINAL", estilo["resultado"])],
-            [Paragraph(r_safe,            estilo["resultado"])],
-        ], colWidths=[W])
-        t.setStyle(TableStyle([
-            ('BACKGROUND',    (0,0), (-1,-1), C_GOLD),
-            ('TOPPADDING',    (0,0), (-1,-1), 12),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 12),
-            ('LEFTPADDING',   (0,0), (-1,-1), 16),
-            ('RIGHTPADDING',  (0,0), (-1,-1), 16),
-        ]))
-        story.append(t)
+    # flush final
+    flush_buffer()
+    flush_paso()
 
     doc.build(story, onFirstPage=pie, onLaterPages=pie)
-    logger.info(f"[academico] PDF limpio generado: {path}")
     return path
 
 
-# ═══════════════════════════════════════════════════════════════
-# GENERAR ESTRUCTURA ARCHIVOS (Excel / PPTX / Word)
-# ═══════════════════════════════════════════════════════════════
-async def generar_estructura_archivo(client, tipo, solicitud, perfil):
-    """
-    Genera JSON estructurado para crear Excel, PPTX o Word.
-    Retorna dict o None si falla.
-    """
-    loop = asyncio.get_event_loop()
-    n    = perfil.get("nombre", "")
-    c    = perfil.get("carrera", "")
-    ctx  = f"Alumno: {n} | {c}" if n or c else ""
-
-    plantillas = {
-        "excel": f"""Genera un Excel para: {solicitud}
-{ctx}
-Responde SOLO JSON valido sin texto extra:
-{{"titulo":"...","hojas":[{{"nombre":"...","encabezados":["col1","col2"],"datos":[["v1","v2"]],"formulas":{{"C2":"=A2*B2"}},"totales":true}}]}}""",
-        "presentacion": f"""Genera una presentacion para: {solicitud}
-{ctx}
-Responde SOLO JSON valido sin texto extra:
-{{"titulo":"...","slides":[{{"titulo":"...","contenido":["punto 1","punto 2"],"notas":"..."}}]}}
-Minimo 6 slides.""",
-        "documento": f"""Genera un documento Word para: {solicitud}
-{ctx}
-Responde SOLO JSON valido sin texto extra:
-{{"titulo":"...","secciones":[{{"heading":"...","contenido":"..."}}]}}"""
-    }
-
-    prompt = plantillas.get(tipo)
-    if not prompt:
-        return None
-
+# ─────────────────────────────────────────────
+# OTRAS FUNCIONES DEL AGENTE
+# ─────────────────────────────────────────────
+def resolver_ejercicio(client, texto, perfil, historial, dificil=False):
+    from groq import Groq
+    modelo = "openai/gpt-oss-120b" if dificil else "llama-3.3-70b-versatile"
+    msgs = [{"role": "system", "content": SYSTEM_ACADEMICO}]
+    if historial:
+        msgs += historial[-6:]
+    msgs.append({"role": "user", "content": texto})
     try:
-        raw, modelo = await loop.run_in_executor(
-            None,
-            lambda: _llamar_fallback(
-                client,
-                [{"role": "user", "content": prompt}],
-                FALLBACK_MEDIO,
-                max_tokens=3000
-            )
+        resp = client.chat.completions.create(
+            model=modelo, messages=msgs, max_tokens=4000
         )
-        raw_clean = re.sub(r'^```(?:json)?\n?', '', raw.strip())
-        raw_clean = re.sub(r'\n?```$', '', raw_clean.strip())
-        return json.loads(raw_clean)
-    except Exception as e:
-        logger.error(f"[academico] Error estructura {tipo}: {e}")
-        return None
+        return resp.choices[0].message.content, modelo
+    except Exception:
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile", messages=msgs, max_tokens=4000
+        )
+        return resp.choices[0].message.content, "llama-3.3-70b-versatile"
+
+
+def analizar_imagen_ejercicio(client, img_bytes, caption, perfil):
+    import base64
+    b64 = base64.b64encode(img_bytes).decode()
+    msgs = [{
+        "role": "user",
+        "content": [
+            {"type": "image_url",
+             "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            {"type": "text",
+             "text": f"{SYSTEM_ACADEMICO}\n\nResuelve este ejercicio paso a paso. {caption or ''}"}
+        ]
+    }]
+    resp = client.chat.completions.create(
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        messages=msgs, max_tokens=4000
+    )
+    solucion = resp.choices[0].message.content
+    return "", solucion, "llama-4-scout"
+
+
+def generar_estructura_archivo(client, tipo, solicitud, perfil):
+    import json as _json
+    prompt = (
+        f"Genera una estructura JSON para un archivo {tipo} sobre: {solicitud}. "
+        f"Responde SOLO con JSON válido, sin texto extra."
+    )
+    resp = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=2000
+    )
+    txt = resp.choices[0].message.content
+    txt = re.sub(r'^```json\s*|^```\s*|```$', '', txt, flags=re.MULTILINE).strip()
+    return _json.loads(txt)
