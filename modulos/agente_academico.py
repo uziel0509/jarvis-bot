@@ -247,6 +247,63 @@ def _escapar(texto):
 # ═══════════════════════════════════════════════════════════════
 # CREAR PDF ACADEMICO — GARANTIA CERO LATEX CRUDO
 # ═══════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────
+# POST-PROCESADOR UNICODE — corrige lo que el modelo no respeta
+# ─────────────────────────────────────────────
+import re as _re
+
+def _fix_unicode_notacion(texto: str) -> str:
+    """
+    Convierte notación con 'n' que usa el modelo en caracteres Unicode reales.
+    Ejemplo: moln1 → mol⁻¹, 10n6 → 10⁶, mn3 → m³, HnO → H₂O
+    """
+    # Superíndices negativos: mn1 → m⁻¹, moln1 → mol⁻¹, sn1 → s⁻¹
+    sup_neg = {'1': '⁻¹', '2': '⁻²', '3': '⁻³'}
+    for d, r in sup_neg.items():
+        texto = _re.sub(rf'([a-zA-Zμ·])n{d}\b', lambda m: m.group(1) + r, texto)
+
+    # Superíndices positivos en potencias: 10n6 → 10⁶, 10n3 → 10³
+    sup_map = {'0':'⁰','1':'¹','2':'²','3':'³','4':'⁴','5':'⁵',
+               '6':'⁶','7':'⁷','8':'⁸','9':'⁹'}
+    def fix_potencia(m):
+        base, exp = m.group(1), m.group(2)
+        exp_uni = ''.join(sup_map.get(c, c) for c in exp)
+        return base + exp_uni
+    # 10n6, 10n-3, 10n-6
+    texto = _re.sub(r'(10)n(-?\d+)', fix_potencia, texto)
+    texto = _re.sub(r'(\d+)n(\d)', fix_potencia, texto)
+
+    # Subíndices en fórmulas químicas conocidas
+    quimicos = [
+        (r'\bC8H18\b', 'C₈H₁₈'), (r'\bC8H1[Ee]\b', 'C₈H₁₈'),
+        (r'\bCnHnn\b', 'C₈H₁₈'),  # octano abreviado con n
+        (r'\bCO2\b', 'CO₂'),       (r'\bH2O\b', 'H₂O'),
+        (r'\bO2\b', 'O₂'),         (r'\bN2\b', 'N₂'),
+        (r'\bNH3\b', 'NH₃'),       (r'\bH2SO4\b', 'H₂SO₄'),
+        (r'\bHCl\b', 'HCl'),       (r'\bNaCl\b', 'NaCl'),
+        (r'\bCO2\b', 'CO₂'),       (r'\bCH4\b', 'CH₄'),
+        (r'\bC6H12O6\b', 'C₆H₁₂O₆'),
+        (r'\bC2H5OH\b', 'C₂H₅OH'), (r'\bCnHnOH\b', 'C₂H₅OH'),
+        (r'\bCnHnnOn\b', 'C₆H₁₂O₆'),
+        (r'\bHnO\b', 'H₂O'),       (r'\bCOn\b', 'CO₂'),
+    ]
+    for pat, rep in quimicos:
+        texto = _re.sub(pat, rep, texto)
+
+    # m³, cm³, dm³
+    texto = _re.sub(r'\bm3\b', 'm³', texto)
+    texto = _re.sub(r'\bcm3\b', 'cm³', texto)
+    texto = _re.sub(r'\bdm3\b', 'dm³', texto)
+    texto = _re.sub(r'\bkm2\b', 'km²', texto)
+    texto = _re.sub(r'\bm2\b', 'm²', texto)
+
+    # Nₐ (número de Avogadro)
+    texto = _re.sub(r'\bNn\b', 'Nₐ', texto)
+    texto = _re.sub(r'\bNA\b', 'Nₐ', texto)
+
+    return texto
+
 def crear_pdf_academico(contenido, user_id, titulo="Solucion de Ejercicio", perfil=None):
     """
     Genera PDF profesional con cero LaTeX crudo.
@@ -259,6 +316,8 @@ def crear_pdf_academico(contenido, user_id, titulo="Solucion de Ejercicio", perf
     Retorna ruta del PDF generado.
     """
     perfil = perfil or {}
+    # Post-procesar el contenido para corregir notación Unicode
+    contenido = _fix_unicode_notacion(contenido)
     nombre = perfil.get("nombre", "Alumno")
     carrera = perfil.get("carrera", "")
     uni     = perfil.get("universidad", "")
@@ -347,8 +406,29 @@ def crear_pdf_academico(contenido, user_id, titulo="Solucion de Ejercicio", perf
             num_paso = 0  # resetear pasos por ejercicio
 
         elif tipo == TIPO_SUBTITULO:
-            story.append(Spacer(1, 0.1*cm))
-            story.append(Paragraph(_escapar(el["contenido"]), estilo["sub_sec"]))
+            contenido_sub = el["contenido"]
+            # Si es encabezado de ejercicio — destacarlo y resetear pasos
+            es_ej = bool(_re.match(
+                r'^(Ejercicio|Problema|Ej\.?)\s*\d+', contenido_sub, _re.IGNORECASE
+            ))
+            if es_ej:
+                story.append(Spacer(1, 0.35*cm))
+                t_ej = Table([[Paragraph(
+                    f"📌 {_escapar(contenido_sub)}", estilo["titulo_sec"]
+                )]], colWidths=[W])
+                t_ej.setStyle(TableStyle([
+                    ('BACKGROUND',    (0,0), (-1,-1), colors.HexColor("#e8eeff")),
+                    ('LEFTPADDING',   (0,0), (-1,-1), 14),
+                    ('TOPPADDING',    (0,0), (-1,-1), 8),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+                    ('LINEBELOW',     (0,0), (-1,-1), 2, C_ACCENT),
+                ]))
+                story.append(t_ej)
+                story.append(Spacer(1, 0.15*cm))
+                num_paso = 0  # resetear pasos por ejercicio
+            else:
+                story.append(Spacer(1, 0.1*cm))
+                story.append(Paragraph(_escapar(contenido_sub), estilo["sub_sec"]))
 
         elif tipo == TIPO_ESPACIO:
             story.append(Spacer(1, 0.2*cm))
