@@ -93,6 +93,14 @@ REGLAS DE FORMATO — OBLIGATORIAS SIN EXCEPCION:
 
 9. Explica el razonamiento en cada paso, no solo el calculo.
 
+10. Para MULTIPLES ejercicios:
+    - Cada ejercicio inicia con: ## Ejercicio N: [titulo descriptivo]
+    - Los pasos de CADA ejercicio empiezan desde Paso 1 (NUNCA continuos)
+    - Ejercicio 17: Paso 1, Paso 2, Paso 3. RESULTADO. 
+    - Ejercicio 18: Paso 1, Paso 2. RESULTADO. (no Paso 4, Paso 5)
+
+11. Para UN solo ejercicio inicia con: ## [titulo descriptivo]
+
 MATERIAS: Calculo, algebra lineal, fisica, estatica, dinamica, resistencia de materiales,
 termodinamica, hidraulica, circuitos, estadistica, quimica y todas las de ingenieria."""
 
@@ -285,21 +293,25 @@ def crear_pdf_academico(contenido, user_id, titulo="Solucion de Ejercicio", perf
     info = nombre + (f" — {carrera}" if carrera else "") + (f" | {uni}" if uni else "")
     fecha = datetime.now().strftime("%d de %B de %Y")
 
+    # Portada limpia — barra de color acento (no negro completo)
     portada = Table([
-        [Paragraph("JARVIS 3.2", estilo["titulo_doc"])],
+        [Paragraph("📘 JARVIS 3.2", estilo["titulo_doc"])],
         [Paragraph(_escapar(titulo), estilo["sub_doc"])],
-        [Paragraph(f"{_escapar(info)}<br/><font size='10'>{fecha}</font>",
-                   estilo["sub_doc"])],
+        [Paragraph(
+            f"{_escapar(info)}<br/><font size='10' color='#aaaacc'>{fecha}</font>",
+            estilo["sub_doc"]
+        )],
     ], colWidths=[W])
     portada.setStyle(TableStyle([
-        ('BACKGROUND',    (0,0), (-1,-1), C_PRIMARY),
-        ('TOPPADDING',    (0,0), (-1, 0), 20),
-        ('BOTTOMPADDING', (0,-1),(-1,-1), 20),
-        ('LEFTPADDING',   (0,0), (-1,-1), 16),
-        ('RIGHTPADDING',  (0,0), (-1,-1), 16),
+        ('BACKGROUND',    (0,0), (-1, 0), C_PRIMARY),   # Solo fila titulo oscura
+        ('BACKGROUND',    (0,1), (-1,-1), C_ACCENT),    # Resto azul acento
+        ('TOPPADDING',    (0,0), (-1, 0), 18),
+        ('BOTTOMPADDING', (0,-1),(-1,-1), 18),
+        ('LEFTPADDING',   (0,0), (-1,-1), 20),
+        ('RIGHTPADDING',  (0,0), (-1,-1), 20),
     ]))
     story.append(portada)
-    story.append(Spacer(1, 0.6*cm))
+    story.append(Spacer(1, 0.5*cm))
 
     # ══════════════════════════════════════════════════════════
     # NUCLEO: procesar_output garantiza cero LaTeX crudo
@@ -307,6 +319,7 @@ def crear_pdf_academico(contenido, user_id, titulo="Solucion de Ejercicio", perf
     elementos  = procesar_output(contenido)
     RE_PASO    = re.compile(r'^(?:Paso\s+(\d+)|(\d+)\.)\s*[:\-]?\s*(.*)', re.IGNORECASE)
     RE_RESULT  = re.compile(r'^RESULTADO\s*[:\-]\s*(.*)', re.IGNORECASE)
+    RE_EJERCICIO = re.compile(r'^#{1,2}\s*(?:Ejercicio\s+\d+|Problema\s+\d+)[:\s]*(.*)', re.IGNORECASE)
 
     resultado_final = None
     i = 0
@@ -317,10 +330,24 @@ def crear_pdf_academico(contenido, user_id, titulo="Solucion de Ejercicio", perf
         tipo = el["tipo"]
 
         if tipo == TIPO_TITULO:
+            story.append(Spacer(1, 0.3*cm))
+            # Cabecera de ejercicio con fondo destacado
+            t_ej = Table([[Paragraph(
+                f"📌 {_escapar(el['contenido'])}", estilo["titulo_sec"]
+            )]], colWidths=[W])
+            t_ej.setStyle(TableStyle([
+                ('BACKGROUND',    (0,0), (-1,-1), colors.HexColor("#e8eeff")),
+                ('LEFTPADDING',   (0,0), (-1,-1), 14),
+                ('TOPPADDING',    (0,0), (-1,-1), 8),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+                ('LINEBELOW',     (0,0), (-1,-1), 2, C_ACCENT),
+            ]))
+            story.append(t_ej)
             story.append(Spacer(1, 0.2*cm))
-            story.append(Paragraph(_escapar(el["contenido"]), estilo["titulo_sec"]))
+            num_paso = 0  # resetear pasos por ejercicio
 
         elif tipo == TIPO_SUBTITULO:
+            story.append(Spacer(1, 0.1*cm))
             story.append(Paragraph(_escapar(el["contenido"]), estilo["sub_sec"]))
 
         elif tipo == TIPO_ESPACIO:
