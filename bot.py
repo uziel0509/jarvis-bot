@@ -58,6 +58,7 @@ from modulos.horario import (
     guardar_resultado_examen, PROMPT_EXTRAER_HORARIO, PROMPT_ANALIZAR_EXAMEN
 )
 from modulos.pre_render import procesar_output, elementos_a_texto_plano
+from modulos.agente_academico import crear_pdf_academico as _crear_pdf_limpio
 
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
@@ -162,6 +163,12 @@ REGLAS DE RESPUESTA OBLIGATORIAS:
   * Fracciones: (numerador / denominador)
   * Operadores: × · ÷ ± ≤ ≥ ≠ ≈ ∑ √ ∫ Δ
 - En PDFs las fórmulas SÍ se renderizan visualmente
+- Cuando resuelvas MÚLTIPLES ejercicios (Ejercicio 1, Ejercicio 2, etc.):
+  * Cada ejercicio debe empezar con: ## Ejercicio N: [título descriptivo]
+  * Los pasos de CADA ejercicio empiezan desde Paso 1 (no son continuos)
+  * Ejemplo: Ejercicio 17 → Paso 1, Paso 2... RESULTADO. Ejercicio 18 → Paso 1, Paso 2... RESULTADO
+  * Nunca continúes la numeración de pasos entre ejercicios distintos
+- Cuando resuelvas UN solo ejercicio, inicia con: ## [título descriptivo del ejercicio]
 - Responde siempre en español a menos que el alumno escriba en otro idioma
 - NO uses frases robóticas como "¡Por supuesto!", "¡Claro que sí!", "Como asistente de IA"
 - NO termines cada mensaje con "¿Hay algo más en lo que pueda ayudarte?" ni "¿En qué puedo ayudarte?"
@@ -728,7 +735,7 @@ def renderizar_formula(formula_latex, ancho_px=500, alto_px=80, fontsize=16):
 # ─────────────────────────────────────────────
 # GENERADOR DE PDF PROFESIONAL CON MATEMÁTICAS
 # ─────────────────────────────────────────────
-def crear_pdf_solucion(contenido, user_id, titulo="Solución de Ejercicio", perfil=None):
+def _crear_pdf_limpio(contenido, user_id, titulo="Solución de Ejercicio", perfil=None):
     """
     Crea un PDF profesional con:
     - Portada con nombre del alumno y fecha
@@ -2224,20 +2231,21 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
 
         if es_ejercicio and (respuesta_larga or tiene_pasos):
             await safe_delete(msg_espera)
-            # Pre-render: limpiar LaTeX y código antes de enviar al chat
-            elementos     = procesar_output(respuesta)
-            respuesta_chat = elementos_a_texto_plano(elementos)
-            await update.message.reply_text(respuesta_chat[:8000])
+            # Solo PDF — sin texto por chat
             try:
                 titulo_pdf = f"Ejercicio — {datetime.now().strftime('%d/%m/%Y')}"
-                path_pdf   = crear_pdf_solucion(respuesta, user_id, titulo_pdf, perfil)
+                path_pdf   = _crear_pdf_limpio(respuesta, user_id, titulo_pdf, perfil)
                 await update.message.reply_document(
                     document=open(path_pdf, "rb"),
                     filename="solucion_jarvis.pdf",
-                    caption="📄 Solución completa con formato profesional"
+                    caption="📄 Aquí tienes tu solución completa"
                 )
             except Exception as e:
                 logger.error(f"Error generando PDF automático: {e}")
+                # Solo si falla el PDF, mandar texto plano
+                elementos      = procesar_output(respuesta)
+                respuesta_chat = elementos_a_texto_plano(elementos)
+                await update.message.reply_text(respuesta_chat[:8000])
         else:
             await safe_edit(msg_espera, limpiar_latex(respuesta))
 
@@ -2382,7 +2390,7 @@ async def manejar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Generar PDF de retroalimentación
             try:
                 titulo_pdf = f"Análisis Examen {materia} — {datetime.now().strftime('%d/%m/%Y')}"
-                path_pdf = crear_pdf_solucion(analisis, user_id, titulo_pdf, perfil)
+                path_pdf = _crear_pdf_limpio(analisis, user_id, titulo_pdf, perfil)
                 await update.message.reply_document(
                     document=open(path_pdf, "rb"),
                     filename=f"analisis_{materia.lower().replace(' ','_')}.pdf",
@@ -2420,7 +2428,7 @@ async def manejar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if pide_pdf or respuesta_larga or tiene_pasos:
             try:
                 titulo_pdf = f"Ejercicio — {datetime.now().strftime('%d/%m/%Y')}"
-                path_pdf = crear_pdf_solucion(solucion, user_id, titulo_pdf, perfil)
+                path_pdf = _crear_pdf_limpio(solucion, user_id, titulo_pdf, perfil)
                 await update.message.reply_document(
                     document=open(path_pdf, "rb"),
                     filename="solucion_jarvis.pdf",
