@@ -738,19 +738,24 @@ def renderizar_formula(formula_latex, ancho_px=500, alto_px=80, fontsize=16):
 # PDF — usa agente_academico (arquitectura JSON)
 # ─────────────────────────────────────────────
 def _crear_pdf_limpio(contenido, user_id, titulo="Solución", perfil=None):
-    """Wrapper: pasa contenido al agente académico para generar PDF."""
-    from modulos.agente_academico import crear_pdf_desde_json, SYSTEM_JSON
+    """Wrapper legacy — llama al nuevo agente con arquitectura JSON."""
+    from modulos.agente_academico import crear_pdf_desde_json
     import json as _json, re as _re
-    # Intentar parsear si ya es JSON
     try:
-        txt = contenido.strip()
-        txt = _re.sub(r'^```json\s*|^```\s*|```$', '', txt, flags=_re.MULTILINE).strip()
+        txt = _re.sub(r'^```json\s*|^```\s*|```$', '', contenido.strip(), flags=_re.MULTILINE).strip()
         datos = _json.loads(txt)
-        return crear_pdf_desde_json(datos, user_id, titulo, perfil)
+        return crear_pdf_desde_json(datos, user_id, perfil)
     except Exception:
-        # Si no es JSON, crear estructura básica con el texto
-        datos = {"ejercicios": [{"titulo": titulo, "datos": [], "pasos": [{"num": 1, "titulo": "Solución", "calculo": contenido[:2000]}], "resultado": ""}]}
-        return crear_pdf_desde_json(datos, user_id, titulo, perfil)
+        datos = {
+            "titulo": titulo,
+            "ejercicios": [{
+                "titulo": titulo,
+                "datos": [],
+                "pasos": [{"num": 1, "titulo": "Desarrollo", "calculo": contenido[:2000]}],
+                "resultado": ""
+            }]
+        }
+        return crear_pdf_desde_json(datos, user_id, perfil)
 
 
 # ─────────────────────────────────────────────
@@ -2006,10 +2011,9 @@ async def procesar_texto(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
             await safe_delete(msg_espera)
             try:
                 from modulos.agente_academico import resolver_y_generar_pdf
-                titulo_pdf = f"Ejercicio — {datetime.now().strftime('%d/%m/%Y')}"
-                path_pdf, _ = await loop.run_in_executor(
+                path_pdf, _ = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: resolver_y_generar_pdf(client, texto, user_id, titulo_pdf, perfil)
+                    lambda: resolver_y_generar_pdf(client, texto, user_id, perfil)
                 )
                 await update.message.reply_document(
                     document=open(path_pdf, "rb"),
@@ -2202,11 +2206,10 @@ async def manejar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if pide_pdf or respuesta_larga or tiene_pasos:
             try:
-                from modulos.agente_academico import resolver_y_generar_pdf
-                titulo_pdf = f"Ejercicio — {datetime.now().strftime('%d/%m/%Y')}"
-                path_pdf, _ = await loop.run_in_executor(
+                from modulos.agente_academico import analizar_imagen_y_generar_pdf
+                path_pdf, _ = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: resolver_y_generar_pdf(client, solucion, user_id, titulo_pdf, perfil)
+                    lambda: analizar_imagen_y_generar_pdf(client, img_bytes, caption, user_id, perfil)
                 )
                 await update.message.reply_document(
                     document=open(path_pdf, "rb"),
